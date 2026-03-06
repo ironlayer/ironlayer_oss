@@ -31,9 +31,6 @@ from cli.commands.mcp import mcp_app
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(mcp_app, name="mcp")
 
-<<<<<<< Updated upstream
-# Register the init and dev commands.
-=======
 # ---------------------------------------------------------------------------
 # Register commands
 # ---------------------------------------------------------------------------
@@ -47,7 +44,6 @@ from cli.commands.backfill import (
     backfill_history_command,
     backfill_resume_command,
 )
->>>>>>> Stashed changes
 from cli.commands.dev import dev_command
 from cli.commands.init import init_command
 from cli.commands.lineage import lineage_command
