@@ -51,7 +51,7 @@ class MeteringMiddleware(BaseHTTPMiddleware):
 
             from api.dependencies import get_metering_collector
 
-            collector = get_metering_collector()
+            collector = get_metering_collector(request)
             tenant_id = getattr(request.state, "tenant_id", "anonymous")
             collector.record_event(
                 tenant_id=tenant_id,

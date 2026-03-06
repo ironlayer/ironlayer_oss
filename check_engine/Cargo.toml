@@ -1,0 +1,47 @@
+[package]
+name = "ironlayer-check-engine"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.75.0"
+license = "Apache-2.0"
+description = "Rust-powered validation engine for IronLayer — 90 rules across 12 categories"
+homepage = "https://ironlayer.app"
+repository = "https://github.com/ironlayer/ironlayer"
+documentation = "https://docs.ironlayer.app"
+
+[lib]
+name = "ironlayer_check_engine"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py311"] }
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
+globset = "0.4"
+ignore = "0.4"
+thiserror = "2"
+log = "0.4"
+pyo3-log = "0.11"
+memchr = "2"
+unicode-segmentation = "1"
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+indoc = "2"
+
+[[bench]]
+name = "check_benchmark"
+harness = false

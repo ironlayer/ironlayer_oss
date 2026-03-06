@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from api.dependencies import get_ai_client, get_db_session, get_metering_collector, get_settings, get_tenant_session
+from api.test_utils import set_app_state_for_test
 from api.main import create_app
 from api.config import APISettings
 from api.services.ai_client import AIServiceClient
@@ -67,6 +68,14 @@ def metering_app():
     mock_ai_client = AsyncMock(spec=AIServiceClient)
     mock_ai_client.health_check = AsyncMock(return_value=True)
     mock_ai_client.close = AsyncMock()
+
+    set_app_state_for_test(
+        app,
+        settings=settings,
+        session=mock_session,
+        ai_client=mock_ai_client,
+        metering=mock_collector,
+    )
 
     app.dependency_overrides[get_metering_collector] = lambda: mock_collector
     app.dependency_overrides[get_settings] = lambda: settings
@@ -139,24 +148,18 @@ class TestMeteringMiddlewareRecording:
     async def test_records_event_for_normal_endpoint(self, metering_app) -> None:
         """A non-skipped endpoint triggers an API_REQUEST event.
 
-        The MeteringMiddleware uses a lazy ``from api.dependencies import
-        get_metering_collector`` call inside ``dispatch``, bypassing FastAPI
-        dependency overrides.  We therefore patch the module-level singleton
-        directly so the middleware picks it up.
+        The MeteringMiddleware resolves the collector via
+        ``get_metering_collector(request)`` which reads from
+        ``request.app.state.metering``.  The fixture sets this via
+        ``set_app_state_for_test``, so the mock collector is picked up
+        automatically.
         """
-        import api.dependencies as deps
-
         app, mock_collector = metering_app
         transport = ASGITransport(app=app)
         headers = _make_auth_headers()
 
-        original = deps._metering_collector
-        try:
-            deps._metering_collector = mock_collector
-            async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
-                resp = await ac.get("/api/v1/plans")
-        finally:
-            deps._metering_collector = original
+        async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
+            resp = await ac.get("/api/v1/plans")
 
         # The middleware should have been invoked and recorded an event.
         found = False
@@ -250,6 +253,17 @@ class TestMeteringFaultTolerance:
             ai_engine_timeout=5.0,
             platform_env="dev",
             cors_origins=["http://localhost:3000"],
+        )
+
+        mock_session = AsyncMock()
+        mock_ai = AsyncMock()
+        mock_metering = MagicMock()
+        set_app_state_for_test(
+            app,
+            settings=settings,
+            session=mock_session,
+            ai_client=mock_ai,
+            metering=mock_metering,
         )
 
         app.dependency_overrides[get_metering_collector] = _raise_collector

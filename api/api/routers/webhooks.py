@@ -11,7 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from api.dependencies import SessionDep, TenantDep
+from api.dependencies import SessionDep, SettingsDep, TenantDep
+from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.github_webhook_service import GitHubWebhookService
 
@@ -156,7 +157,7 @@ async def github_webhook(request: Request) -> dict[str, Any]:
             # Decrypt the stored secret to compute the expected HMAC.
             from api.security import CredentialVault
 
-            settings = get_settings()
+            settings = get_settings(request)
             vault = CredentialVault(settings.credential_encryption_key.get_secret_value())
             try:
                 plaintext_secret = vault.decrypt(secret_encrypted)
@@ -223,13 +224,11 @@ async def create_webhook_config(
     body: WebhookConfigCreate,
     session: SessionDep,
     tenant_id: TenantDep,
+    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.MANAGE_WEBHOOKS)),
 ) -> dict[str, Any]:
     """Create a new webhook configuration for the authenticated tenant."""
-    from api.dependencies import get_settings
     from api.security import CredentialVault
-
-    settings = get_settings()
     vault = CredentialVault(settings.credential_encryption_key.get_secret_value())
 
     service = GitHubWebhookService(
@@ -268,8 +267,5 @@ async def delete_webhook_config(
     service = GitHubWebhookService(session, tenant_id=tenant_id)
     deleted = await service.delete_config(config_id)
     if not deleted:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Webhook config {config_id} not found",
-        )
+        raise not_found_404("Webhook config", config_id)
     return {"deleted": True, "config_id": config_id}
