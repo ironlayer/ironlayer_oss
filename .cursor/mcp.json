@@ -1,13 +1,45 @@
 {
   "mcpServers": {
-    "dpb-platform": {
-      "command": "/Users/helderdasilva/Documents/production_code/iron-layer-dev-workspace/repos/dpb-data-platform-in-a-box/.venv/bin/python",
+    "exodus-core": {
+      "command": "uv",
       "args": [
-        "/Users/helderdasilva/Documents/production_code/iron-layer-dev-workspace/repos/dpb-data-platform-in-a-box/dpb/mcp_server.py"
+        "run",
+        "--project",
+        "${env:HOME}/Documents/production_code/exodus-core",
+        "python",
+        "-m",
+        "exodus_core.mcp_server"
       ],
       "env": {
-        "PYTHONPATH": "/Users/helderdasilva/Documents/production_code/iron-layer-dev-workspace/repos/dpb-data-platform-in-a-box"
+        "PYTHONPATH": "${env:HOME}/Documents/production_code/exodus-core",
+        "ANTHROPIC_API_KEY": "${env:ANTHROPIC_API_KEY}",
+        "DATABRICKS_HOST": "${env:DATABRICKS_HOST}",
+        "DATABRICKS_TOKEN": "${env:DATABRICKS_TOKEN}",
+        "DATABRICKS_WAREHOUSE_ID": "${env:DATABRICKS_WAREHOUSE_ID}",
+        "EXODUS_BUDGET_LIMIT": "${env:EXODUS_BUDGET_LIMIT}",
+        "EXODUS_USE_LOCAL_LLMS": "${env:EXODUS_USE_LOCAL_LLMS}",
+        "OLLAMA_BASE_URL": "${env:OLLAMA_BASE_URL}"
       }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
+      }
+    },
+    "dbt": {
+      "command": "uvx",
+      "args": ["dbt-mcp"],
+      "env": {
+        "DBT_PROJECT_DIR": "${env:HOME}/Documents/production_code/ironlayer_infra/dbt-framework",
+        "DBT_PROFILES_DIR": "${env:HOME}/.dbt",
+        "DBT_TARGET": "dev"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${env:HOME}/Documents/production_code"]
     }
   }
 }
