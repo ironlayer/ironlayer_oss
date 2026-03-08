@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from typer.testing import CliRunner
 
 from cli.app import app
-from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -199,7 +203,7 @@ class TestGitInit:
         result = _init_in_dir(tmp_path, "--no-git")
         assert result.exit_code == 0
 
-        tmp_path / ".git"
+        git_dir = tmp_path / ".git"
         # If no existing git repo, .git should NOT be created with --no-git.
         # (Unless already in a repo from the test runner's perspective.)
 

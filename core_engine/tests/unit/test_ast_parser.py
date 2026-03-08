@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from core_engine.parser.ast_parser import (
     ModelASTMetadata,
     SQLParseError,

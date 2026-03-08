@@ -7,11 +7,13 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
+from core_engine.metering.events import UsageEvent, UsageEventType
 from core_engine.metering.collector import (
     FileSink,
     MeteringCollector,
 )
-from core_engine.metering.events import UsageEvent, UsageEventType
 
 # ---------------------------------------------------------------------------
 # UsageEvent

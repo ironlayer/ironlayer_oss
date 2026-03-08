@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import date
 
 import networkx as nx
+import pytest
 
 from core_engine.contracts.schema_validator import (
     ContractValidationResult,
@@ -20,11 +21,13 @@ from core_engine.contracts.schema_validator import (
 )
 from core_engine.models.diff import DiffResult
 from core_engine.models.model_definition import (
+    ColumnContract,
     ModelDefinition,
     ModelKind,
     SchemaContractMode,
 )
-from core_engine.planner.interval_planner import generate_plan
+from core_engine.models.plan import Plan, PlanStep, PlanSummary
+from core_engine.planner.interval_planner import PlannerConfig, generate_plan
 
 # ---------------------------------------------------------------------------
 # Fixed date for determinism

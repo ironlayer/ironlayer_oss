@@ -10,9 +10,10 @@ Also covers edge cases with CTEs, subqueries, and timeout handling.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
 from ai_engine.engines.suggestion_validator import (
     SuggestionValidator,
     ValidationResult,

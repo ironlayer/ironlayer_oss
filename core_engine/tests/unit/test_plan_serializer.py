@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
+
 from core_engine.models.plan import Plan, PlanStep, PlanSummary, RunType
 from core_engine.planner.plan_serializer import (
     deserialize_plan,
     serialize_plan,
     validate_plan_schema,
 )
-from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -88,7 +89,7 @@ class TestSerializePlan:
         # Check that indentation uses 2 spaces (first nested key).
         lines = json_str.split("\n")
         # Find the first indented line.
-        indented = [line for line in lines if line.startswith("  ") and not line.startswith("    ")]
+        indented = [l for l in lines if l.startswith("  ") and not l.startswith("    ")]
         assert len(indented) > 0
 
 

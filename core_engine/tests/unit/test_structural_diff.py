@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core_engine.diff.structural_diff import compute_structural_diff
 from core_engine.models.diff import DiffResult
 

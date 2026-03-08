@@ -7,10 +7,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, SettingsDep, TenantDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.schemas import (
     CheckoutSessionResponse,
@@ -34,50 +33,13 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 # ---------------------------------------------------------------------------
 
 
-def _validate_redirect_url(url: str) -> str:
-    """Validate that a redirect URL uses HTTPS and is well-formed.
-
-    Prevents open-redirect attacks where an attacker crafts a Stripe
-    portal/checkout session that redirects users to a malicious site
-    by embedding a non-HTTPS or non-URL value in return_url / success_url.
-
-    Only ``https://`` URLs are accepted.  Plain ``http://`` is rejected
-    (prevents active network attackers from intercepting the redirect);
-    non-URL schemes (``javascript:``, ``data:``, etc.) are rejected
-    outright.
-
-    Raises
-    ------
-    ValueError
-        If the URL does not start with ``https://`` or contains
-        whitespace (common injection technique).
-    """
-    stripped = url.strip()
-    if stripped != url:
-        raise ValueError("Redirect URL must not have leading or trailing whitespace.")
-    if not stripped.startswith("https://"):
-        raise ValueError(
-            "Redirect URL must use the HTTPS scheme (https://). "
-            "HTTP and other schemes are not permitted."
-        )
-    # Reject embedded newlines or spaces that could be used for header injection.
-    if any(c in stripped for c in ("\n", "\r", " ", "\t")):
-        raise ValueError("Redirect URL must not contain whitespace or newline characters.")
-    return stripped
-
-
 class PortalRequest(BaseModel):
     """Request body for ``POST /billing/portal``."""
 
     return_url: str = Field(
         ...,
-        description="HTTPS URL to redirect the user to after leaving the Stripe portal.",
+        description="URL to redirect the user to after leaving the Stripe portal.",
     )
-
-    @field_validator("return_url")
-    @classmethod
-    def _check_return_url(cls, v: str) -> str:
-        return _validate_redirect_url(v)
 
 
 class CheckoutRequest(BaseModel):
@@ -89,17 +51,12 @@ class CheckoutRequest(BaseModel):
     )
     success_url: str = Field(
         ...,
-        description="HTTPS URL to redirect to after successful checkout.",
+        description="URL to redirect to after successful checkout.",
     )
     cancel_url: str = Field(
         ...,
-        description="HTTPS URL to redirect to if the customer cancels.",
+        description="URL to redirect to if the customer cancels.",
     )
-
-    @field_validator("success_url", "cancel_url")
-    @classmethod
-    def _check_checkout_urls(cls, v: str) -> str:
-        return _validate_redirect_url(v)
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +342,7 @@ async def list_invoices(
     tenant_id: TenantDep,
     _role: Role = Depends(require_permission(Permission.VIEW_INVOICES)),
     limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=100_000),
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     """Return paginated list of invoices for this tenant."""
     service = InvoiceService(session, tenant_id, settings.invoice_storage_path)
@@ -404,7 +361,7 @@ async def get_invoice(
     service = InvoiceService(session, tenant_id, settings.invoice_storage_path)
     invoice = await service.get_invoice(invoice_id)
     if invoice is None:
-        raise not_found_404("Invoice", invoice_id)
+        raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found")
     return invoice
 
 
@@ -420,7 +377,7 @@ async def download_invoice_pdf(
     service = InvoiceService(session, tenant_id, settings.invoice_storage_path)
     pdf_bytes = await service.get_pdf(invoice_id)
     if pdf_bytes is None:
-        raise not_found_404("PDF for invoice", invoice_id)
+        raise HTTPException(status_code=404, detail=f"PDF not found for invoice '{invoice_id}'")
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",

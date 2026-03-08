@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core_engine.license.feature_flags import (
-    TIER_FEATURES,
     Feature,
     LicenseTier,
+    TIER_FEATURES,
     get_required_tier,
     get_tier_features,
     is_feature_enabled,

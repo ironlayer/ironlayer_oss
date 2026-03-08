@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core_engine.contracts.schema_validator import (
     ContractValidationResult,
     ContractViolation,
@@ -1008,7 +1010,7 @@ class TestValidateSchemaContractModes:
         warn_result = validate_schema_contract(warn_model)
         strict_result = validate_schema_contract(strict_model)
         assert len(warn_result.violations) == len(strict_result.violations)
-        for wv, sv in zip(warn_result.violations, strict_result.violations, strict=False):
+        for wv, sv in zip(warn_result.violations, strict_result.violations):
             assert wv.violation_type == sv.violation_type
             assert wv.severity == sv.severity
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +17,10 @@ from api.middleware.trace_context import (
     TraceLoggingFilter,
     _generate_span_id,
     _generate_trace_id,
+    get_span_id,
+    get_trace_context,
+    get_trace_flags,
+    get_trace_id,
     get_traceparent,
 )
 
@@ -271,12 +276,9 @@ class TestAIClientForwarding:
                 captured_headers.update(dict(request.headers))
                 return httpx.Response(200, json={"ok": True})
 
-            from api.services.ai_client import _CircuitBreaker
-
             mock_transport = httpx.MockTransport(capture_transport)
             client = AIServiceClient.__new__(AIServiceClient)
             client._base_url = "http://test:8001"
-            client._circuit_breaker = _CircuitBreaker()
             client._client = httpx.AsyncClient(
                 base_url="http://test:8001",
                 transport=mock_transport,

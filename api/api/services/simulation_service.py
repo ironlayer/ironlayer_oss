@@ -190,28 +190,10 @@ class SimulationService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    # Maximum number of models loaded per simulation call (BL-093).
-    _MODEL_LOAD_LIMIT = 500
-
     async def _load_models(self) -> list[ModelDefinition]:
-        """Load model records and convert to ModelDefinitions.
-
-        Applies a safety cap of :attr:`_MODEL_LOAD_LIMIT` rows (default 500)
-        to prevent runaway memory allocation for tenants with very large model
-        catalogs.  A warning is logged when the cap is reached so operators
-        know the impact graph may be incomplete.
-        """
+        """Load all model records and convert to ModelDefinitions."""
         repo = ModelRepository(self._session, tenant_id=self._tenant_id)
-        rows = await repo.list_all(limit=self._MODEL_LOAD_LIMIT)
-        if len(rows) >= self._MODEL_LOAD_LIMIT:
-            logger.warning(
-                "SimulationService loaded %d models (cap=%d) for tenant %s — "
-                "the dependency graph may be incomplete.  Consider increasing "
-                "_MODEL_LOAD_LIMIT or paginating the simulation.",
-                len(rows),
-                self._MODEL_LOAD_LIMIT,
-                self._tenant_id,
-            )
+        rows = await repo.list_all()
         return [_table_to_definition(row) for row in rows]
 
     @staticmethod

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+import pytest
+from typer.testing import CliRunner
 
 from cli.app import app
-from cli.commands.dev import _build_services_table, _setup_local_env
-from dotenv import load_dotenv
-from typer.testing import CliRunner
+from cli.commands.dev import _setup_local_env, _load_dotenv, _build_services_table
 
 runner = CliRunner()
 
@@ -23,7 +25,7 @@ class TestConfigDetection:
 
     def test_no_config_exits_with_error(self, tmp_path: Path) -> None:
         """Running dev in a directory without a IronLayer project should fail."""
-        runner.invoke(app, ["dev"], catch_exceptions=True)
+        result = runner.invoke(app, ["dev"], catch_exceptions=True)
         # The test runner's cwd might have .env, so we test via the setup function instead.
         # Direct CLI invocation depends on cwd which is tricky in tests.
 
@@ -94,52 +96,65 @@ class TestSetupLocalEnv:
 
 
 class TestLoadDotenv:
-    """Verify .env file loading via python-dotenv (used by _setup_local_env)."""
+    """Verify .env file loading."""
 
     def test_loads_variables(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_LOAD_VAR=hello_world\n")
+
+        # Clear in case it exists.
         os.environ.pop("TEST_LOAD_VAR", None)
-        load_dotenv(env_file, override=False)
+
+        _load_dotenv(env_file)
         assert os.environ.get("TEST_LOAD_VAR") == "hello_world"
+
+        # Cleanup.
         os.environ.pop("TEST_LOAD_VAR", None)
 
     def test_skips_comments(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text("# comment\nTEST_COMMENT_VAR=value\n")
+
         os.environ.pop("TEST_COMMENT_VAR", None)
-        load_dotenv(env_file, override=False)
+        _load_dotenv(env_file)
         assert os.environ.get("TEST_COMMENT_VAR") == "value"
+
         os.environ.pop("TEST_COMMENT_VAR", None)
 
     def test_skips_empty_lines(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text("\n\nTEST_EMPTY_VAR=val\n\n")
+
         os.environ.pop("TEST_EMPTY_VAR", None)
-        load_dotenv(env_file, override=False)
+        _load_dotenv(env_file)
         assert os.environ.get("TEST_EMPTY_VAR") == "val"
+
         os.environ.pop("TEST_EMPTY_VAR", None)
 
     def test_existing_env_takes_precedence(self, tmp_path: Path) -> None:
-        """Variables already in os.environ should NOT be overwritten (override=False)."""
+        """Variables already in os.environ should NOT be overwritten."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_PREC_VAR=from_file\n")
+
         os.environ["TEST_PREC_VAR"] = "from_env"
-        load_dotenv(env_file, override=False)
+        _load_dotenv(env_file)
         assert os.environ.get("TEST_PREC_VAR") == "from_env"
+
         os.environ.pop("TEST_PREC_VAR", None)
 
     def test_strips_quotes(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text('TEST_QUOTE_VAR="quoted_value"\n')
+
         os.environ.pop("TEST_QUOTE_VAR", None)
-        load_dotenv(env_file, override=False)
+        _load_dotenv(env_file)
         assert os.environ.get("TEST_QUOTE_VAR") == "quoted_value"
+
         os.environ.pop("TEST_QUOTE_VAR", None)
 
     def test_nonexistent_file(self, tmp_path: Path) -> None:
         """Loading a nonexistent file should be a no-op."""
-        load_dotenv(tmp_path / "does_not_exist", override=False)
+        _load_dotenv(tmp_path / "does_not_exist")
         # Should not raise.
 
 

@@ -69,8 +69,3 @@ warn_return_any = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=core_engine --cov-report=term-missing"
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests requiring live external services",
-    "benchmark: marks performance benchmark tests",
-]

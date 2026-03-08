@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -393,7 +394,7 @@ class TestComputeHealthScore:
     async def test_feature_breadth_capped_at_25(self, mock_session: AsyncMock) -> None:
         """Even with more than 6 distinct event types, feature breadth caps at 25."""
         now = datetime.now(UTC)
-        now - timedelta(hours=1)
+        recent_dt = now - timedelta(hours=1)
 
         login_result = MagicMock()
         login_result.scalar_one_or_none.return_value = None

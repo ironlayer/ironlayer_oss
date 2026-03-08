@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from core_engine.models.model_definition import ModelTestDefinition, ModelTestType
 from core_engine.testing.test_runner import (
     ModelTestRunner,
@@ -221,7 +222,7 @@ class TestDialectUpsert:
         mock_session.execute = AsyncMock(return_value=MagicMock())
 
         # Use a real SQLAlchemy table for the sqlite insert to work
-        from sqlalchemy import Column, MetaData, String, Table
+        from sqlalchemy import Column, Integer, MetaData, String, Table
 
         metadata = MetaData()
         test_table = Table(
@@ -264,7 +265,7 @@ class TestDialectUpsert:
         mock_session.execute = AsyncMock(return_value=MagicMock())
 
         # Use a real-enough SQLAlchemy table for the postgresql insert to work
-        from sqlalchemy import Column, MetaData, String, Table
+        from sqlalchemy import Column, Integer, MetaData, String, Table
 
         metadata = MetaData()
         test_table = Table(

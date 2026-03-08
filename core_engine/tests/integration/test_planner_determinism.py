@@ -12,6 +12,8 @@ import json
 from datetime import date
 
 import networkx as nx
+import pytest
+
 from core_engine.diff.structural_diff import compute_structural_diff
 from core_engine.graph.dag_builder import build_dag
 from core_engine.models.diff import DiffResult
@@ -511,7 +513,7 @@ class TestSerializerRoundTrip:
         assert plan.target == restored.target
         assert plan.summary.total_steps == restored.summary.total_steps
         assert len(plan.steps) == len(restored.steps)
-        for orig, rest in zip(plan.steps, restored.steps, strict=False):
+        for orig, rest in zip(plan.steps, restored.steps):
             assert orig.step_id == rest.step_id
             assert orig.model == rest.model
 

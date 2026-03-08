@@ -58,7 +58,7 @@ async def optimize_sql(
             return cached
 
     logger.info("Optimising SQL (length=%d)", len(request.sql))
-    result = await optimizer.optimize(request)
+    result = optimizer.optimize(request)
 
     # Store in cache
     if _cache is not None:

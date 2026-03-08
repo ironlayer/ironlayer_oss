@@ -10,6 +10,7 @@ and custom threshold configuration.
 from __future__ import annotations
 
 import pytest
+
 from ai_engine.engines.risk_scorer import RiskScorer
 from ai_engine.models.requests import RiskScoreRequest
 from ai_engine.models.responses import RiskScoreResponse

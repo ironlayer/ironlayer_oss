@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from core_engine.graph.dag_builder import (
     CyclicDependencyError,
     assign_parallel_groups,
@@ -33,7 +34,7 @@ def _model(
         name=name,
         kind=ModelKind.FULL_REFRESH,
         file_path=f"models/{name}.sql",
-        raw_sql="SELECT 1",
+        raw_sql=f"SELECT 1",
         referenced_tables=referenced_tables or [],
         dependencies=dependencies or [],
     )

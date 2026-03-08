@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
+
+import pytest
 
 from ai_engine.engines.cache import DEFAULT_TTL, ResponseCache
 

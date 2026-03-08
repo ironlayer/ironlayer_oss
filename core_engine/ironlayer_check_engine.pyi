@@ -6,6 +6,7 @@ ref() integrity, and project structure.
 """
 
 from enum import IntEnum
+from typing import Optional
 
 class Dialect(IntEnum):
     """SQL dialect for dialect-aware checks.
@@ -77,15 +78,15 @@ class CheckDiagnostic:
         """1-based column number (0 if not applicable)."""
         ...
     @property
-    def snippet(self) -> str | None:
+    def snippet(self) -> Optional[str]:
         """Offending text snippet (max 120 chars), if available."""
         ...
     @property
-    def suggestion(self) -> str | None:
+    def suggestion(self) -> Optional[str]:
         """Suggested fix, if one exists."""
         ...
     @property
-    def doc_url(self) -> str | None:
+    def doc_url(self) -> Optional[str]:
         """URL to documentation for this rule."""
         ...
     def __repr__(self) -> str: ...
@@ -191,17 +192,17 @@ class CheckConfig:
     @no_cache.setter
     def no_cache(self, value: bool) -> None: ...
     @property
-    def select(self) -> str | None:
+    def select(self) -> Optional[str]:
         """Comma-separated rule IDs or categories to select."""
         ...
     @select.setter
-    def select(self, value: str | None) -> None: ...
+    def select(self, value: Optional[str]) -> None: ...
     @property
-    def exclude_rules(self) -> str | None:
+    def exclude_rules(self) -> Optional[str]:
         """Comma-separated rule IDs or categories to exclude."""
         ...
     @exclude_rules.setter
-    def exclude_rules(self, value: str | None) -> None: ...
+    def exclude_rules(self, value: Optional[str]) -> None: ...
     @property
     def dialect(self) -> Dialect:
         """SQL dialect for dialect-aware checks."""

@@ -1,9 +1,7 @@
 """Cloud authentication and configuration management.
 
-Stores API URL in ``~/.ironlayer/config.toml`` and API token in the OS
-keychain (macOS Keychain, GNOME Keyring, Windows Credential Locker) when
-the ``keyring`` package is installed.  Falls back to the TOML file for
-token storage when keyring is unavailable (e.g. headless CI runners).
+Stores API credentials in ``~/.ironlayer/config.toml`` for connecting
+the local CLI to IronLayer Cloud.
 """
 
 from __future__ import annotations
@@ -20,39 +18,6 @@ except ModuleNotFoundError:  # pragma: no cover – Python < 3.11 fallback
 
 _CONFIG_DIR = Path.home() / ".ironlayer"
 _CONFIG_FILE = _CONFIG_DIR / "config.toml"
-_KEYRING_SERVICE = "ironlayer-cli"
-_KEYRING_USERNAME = "api_token"
-
-
-def _keyring_get() -> str | None:
-    """Try to read the token from the OS keychain.  Returns ``None`` on any failure."""
-    try:
-        import keyring  # type: ignore[import-untyped]
-
-        return keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
-    except Exception:
-        return None
-
-
-def _keyring_set(token: str) -> bool:
-    """Try to store the token in the OS keychain.  Returns ``True`` on success."""
-    try:
-        import keyring  # type: ignore[import-untyped]
-
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, token)
-        return True
-    except Exception:
-        return False
-
-
-def _keyring_delete() -> None:
-    """Try to remove the token from the OS keychain.  Silently ignores errors."""
-    try:
-        import keyring  # type: ignore[import-untyped]
-
-        keyring.delete_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
-    except Exception:
-        pass
 
 
 def load_cloud_config() -> dict[str, Any]:
@@ -70,13 +35,7 @@ def load_cloud_config() -> dict[str, Any]:
 
 
 def load_stored_token() -> str | None:
-    """Return the stored API token, or ``None`` if not authenticated.
-
-    Checks the OS keychain first; falls back to the TOML file.
-    """
-    token = _keyring_get()
-    if token is not None:
-        return token
+    """Return the stored API token, or ``None`` if not authenticated."""
     config = load_cloud_config()
     return config.get("cloud", {}).get("api_token")
 
@@ -88,25 +47,14 @@ def load_api_url() -> str:
 
 
 def save_cloud_config(api_url: str, api_token: str) -> None:
-    """Save cloud credentials with secure storage.
-
-    The API token is stored in the OS keychain when ``keyring`` is
-    available.  The TOML file always stores the API URL and is used as a
-    fallback for the token when keychain is not available.
+    """Save cloud credentials to ``~/.ironlayer/config.toml`` with secure permissions.
 
     The file is written with ``0o600`` (owner read/write only) to prevent
-    other users on the system from reading any stored credentials.
+    other users on the system from reading the stored API token.
     """
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    used_keyring = _keyring_set(api_token)
-
-    # Always persist api_url in the TOML file.  Persist the token there
-    # too when keyring is unavailable so the CLI still works headless.
-    if used_keyring:
-        content = f'[cloud]\napi_url = "{api_url}"\n'
-    else:
-        content = f'[cloud]\napi_url = "{api_url}"\napi_token = "{api_token}"\n'
+    content = f'[cloud]\napi_url = "{api_url}"\napi_token = "{api_token}"\n'
     _CONFIG_FILE.write_text(content, encoding="utf-8")
 
     # Restrict permissions to owner only (0o600).
@@ -114,7 +62,6 @@ def save_cloud_config(api_url: str, api_token: str) -> None:
 
 
 def clear_cloud_config() -> None:
-    """Remove stored cloud credentials from both keychain and config file."""
-    _keyring_delete()
+    """Remove stored cloud credentials."""
     if _CONFIG_FILE.exists():
         _CONFIG_FILE.unlink()

@@ -15,7 +15,6 @@ All Databricks PATs are stored encrypted at rest and never logged.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -24,7 +23,7 @@ import socket
 import time
 import uuid
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr
@@ -36,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def _validate_url_safe(url: str, allowed_issuer_host: str) -> None:
+def _validate_url_safe(url: str, allowed_issuer_host: str) -> None:
     """Validate that a URL is safe to fetch, preventing SSRF attacks.
 
     Checks:
@@ -45,9 +44,6 @@ async def _validate_url_safe(url: str, allowed_issuer_host: str) -> None:
     3. Resolved IP addresses must not be in private, loopback, link-local,
        or reserved ranges (prevents SSRF to internal services, cloud
        metadata endpoints like ``169.254.169.254``, etc.).
-
-    Uses the event loop's non-blocking ``getaddrinfo`` with a 2-second
-    timeout to avoid stalling the event loop during DNS resolution (BL-012).
 
     Parameters
     ----------
@@ -91,21 +87,10 @@ async def _validate_url_safe(url: str, allowed_issuer_host: str) -> None:
             f"'{allowed_issuer_host}' or a subdomain of it. URL: {url}"
         )
 
-    # --- Async DNS resolution and IP range check (BL-012) ---
-    # Use the event-loop's non-blocking getaddrinfo() to avoid stalling the
-    # event loop thread during DNS lookups.  A 2-second timeout guards
-    # against slow resolvers.
+    # --- DNS resolution and IP range check ---
     try:
-        loop = asyncio.get_running_loop()
-        addr_infos = await asyncio.wait_for(
-            loop.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP),
-            timeout=2.0,
-        )
-    except asyncio.TimeoutError:
-        raise PermissionError(
-            f"DNS resolution timed out for hostname '{hostname}' (2s limit)"
-        )
-    except OSError as exc:
+        addr_infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
         raise PermissionError(f"DNS resolution failed for hostname '{hostname}': {exc}") from exc
 
     if not addr_infos:
@@ -184,11 +169,6 @@ class TokenConfig(BaseModel):
     oidc_issuer_url: str | None = None
     oidc_audience: str | None = None
     max_token_ttl_seconds: int = 86400  # Hard cap: 24 hours
-    # Previous JWT secret for zero-downtime rotation.
-    # Tokens signed with this secret remain valid until it is removed (after TTL passes).
-    # Rotation procedure: set JWT_SECRET_PREVIOUS=<old>, set JWT_SECRET=<new>, deploy.
-    # Remove JWT_SECRET_PREVIOUS after all existing tokens expire.
-    jwt_secret_previous: SecretStr | None = None
 
     def resolve_kms_provider(self) -> KmsProvider:
         """Auto-detect the KMS provider from the key URI format.
@@ -238,46 +218,26 @@ class OIDCProvider:
             raise PermissionError(f"Could not extract hostname from OIDC issuer URL: {issuer_url}")
         self._allowed_issuer_host: str = issuer_host
 
-    async def _fetch_discovery(self) -> dict[str, Any]:
+    def _fetch_discovery(self) -> dict[str, Any]:
         """Fetch the OIDC discovery document from the well-known endpoint.
 
         Validates the discovery URL against SSRF before fetching.
-        Runs the blocking HTTP fetch in a thread-pool executor so the
-        event loop is never stalled.
         """
         import json
         import urllib.request
 
         discovery_url = f"{self._issuer_url}/.well-known/openid-configuration"
 
-        # SSRF protection: async DNS validation.
-        await _validate_url_safe(discovery_url, self._allowed_issuer_host)
-
-        # Run the blocking HTTP request in a thread-pool executor.
-        loop = asyncio.get_running_loop()
-
-        def _do_fetch() -> bytes:
-            try:
-                with urllib.request.urlopen(discovery_url, timeout=10) as resp:
-                    return cast(bytes, resp.read())
-            except PermissionError:
-                raise
-            except Exception as exc:
-                raise PermissionError(
-                    f"Failed to fetch OIDC discovery document from {discovery_url}: {exc}"
-                ) from exc
+        # SSRF protection: validate the URL before fetching.
+        _validate_url_safe(discovery_url, self._allowed_issuer_host)
 
         try:
-            raw = await loop.run_in_executor(None, _do_fetch)
+            with urllib.request.urlopen(discovery_url, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
         except PermissionError:
             raise  # Re-raise SSRF validation errors without wrapping
-
-        try:
-            data = json.loads(raw.decode("utf-8"))
         except Exception as exc:
-            raise PermissionError(
-                f"Failed to parse OIDC discovery document from {discovery_url}: {exc}"
-            ) from exc
+            raise PermissionError(f"Failed to fetch OIDC discovery document from {discovery_url}: {exc}") from exc
 
         required_fields = {"issuer", "jwks_uri", "id_token_signing_alg_values_supported"}
         missing = required_fields - set(data.keys())
@@ -285,57 +245,43 @@ class OIDCProvider:
             raise PermissionError(f"OIDC discovery document missing required fields: {sorted(missing)}")
 
         self._discovery = data
-        return cast(dict[str, Any], data)
+        return data
 
-    async def _fetch_jwks(self) -> dict[str, Any]:
+    def _fetch_jwks(self) -> dict[str, Any]:
         """Fetch JSON Web Key Set from the provider's JWKS endpoint.
 
         Validates the JWKS URI against SSRF before fetching.  This is
         critical because the ``jwks_uri`` is taken from the discovery
         document, which could be controlled by an attacker if the OIDC
         issuer URL is compromised.
-        Runs the blocking HTTP fetch in a thread-pool executor.
         """
         import json
         import urllib.request
 
         if self._discovery is None:
-            await self._fetch_discovery()
+            self._fetch_discovery()
 
         jwks_uri = self._discovery["jwks_uri"]  # type: ignore[index]
 
-        # SSRF protection: async DNS validation of JWKS URI.
-        await _validate_url_safe(jwks_uri, self._allowed_issuer_host)
-
-        loop = asyncio.get_running_loop()
-
-        def _do_fetch() -> bytes:
-            try:
-                with urllib.request.urlopen(jwks_uri, timeout=10) as resp:
-                    return cast(bytes, resp.read())
-            except PermissionError:
-                raise
-            except Exception as exc:
-                raise PermissionError(f"Failed to fetch JWKS from {jwks_uri}: {exc}") from exc
+        # SSRF protection: validate the JWKS URI before fetching.
+        _validate_url_safe(jwks_uri, self._allowed_issuer_host)
 
         try:
-            raw = await loop.run_in_executor(None, _do_fetch)
+            with urllib.request.urlopen(jwks_uri, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
         except PermissionError:
             raise  # Re-raise SSRF validation errors without wrapping
-
-        try:
-            data = json.loads(raw.decode("utf-8"))
         except Exception as exc:
-            raise PermissionError(f"Failed to parse JWKS from {jwks_uri}: {exc}") from exc
+            raise PermissionError(f"Failed to fetch JWKS from {jwks_uri}: {exc}") from exc
 
         if "keys" not in data or not data["keys"]:
             raise PermissionError("JWKS response contains no keys")
 
         self._jwks = data
         self._jwks_fetched_at = time.time()
-        return cast(dict[str, Any], data)
+        return data
 
-    async def _get_signing_key(self, kid: str) -> Any:
+    def _get_signing_key(self, kid: str) -> Any:
         """Retrieve the signing key matching the token's key ID.
 
         Implements key rotation detection: if the kid is not found in
@@ -345,7 +291,7 @@ class OIDCProvider:
         cache_expired = (now - self._jwks_fetched_at) > self._cache_ttl
 
         if self._jwks is None or cache_expired:
-            await self._fetch_jwks()
+            self._fetch_jwks()
 
         # Search for the key by kid
         for key_data in self._jwks.get("keys", []):  # type: ignore[union-attr]
@@ -355,14 +301,14 @@ class OIDCProvider:
         # Key not found -- force refresh (key rotation)
         if not cache_expired:
             logger.info("Key ID '%s' not found in cached JWKS; refreshing", kid)
-            await self._fetch_jwks()
+            self._fetch_jwks()
             for key_data in self._jwks.get("keys", []):  # type: ignore[union-attr]
                 if key_data.get("kid") == kid:
                     return key_data
 
         raise PermissionError(f"No signing key found for kid='{kid}' in JWKS from {self._issuer_url}")
 
-    async def validate_token(self, token: str) -> TokenClaims:
+    def validate_token(self, token: str) -> TokenClaims:
         """Validate an OIDC token and return IronLayer TokenClaims.
 
         Steps:
@@ -399,7 +345,7 @@ class OIDCProvider:
             raise PermissionError("Token header missing 'kid' claim")
 
         # Get the signing key
-        key_data = await self._get_signing_key(kid)
+        key_data = self._get_signing_key(kid)
 
         # Build the public key from JWK
         try:
@@ -587,7 +533,7 @@ class AzureKeyVaultProvider:
 
         client = self._get_client()
         result = client.wrap_key(KeyWrapAlgorithm.rsa_oaep_256, plaintext_key)
-        return cast(bytes, result.encrypted_key)
+        return result.encrypted_key
 
     def unwrap_key(self, wrapped_key: bytes) -> bytes:
         """Unwrap (decrypt) a data key using the Key Vault RSA key.
@@ -606,7 +552,7 @@ class AzureKeyVaultProvider:
 
         client = self._get_client()
         result = client.unwrap_key(KeyWrapAlgorithm.rsa_oaep_256, wrapped_key)
-        return cast(bytes, result.key)
+        return result.key
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -705,46 +651,9 @@ class TokenManager:
         elif self._config.auth_mode == AuthMode.KMS_EXCHANGE:
             return self._validate_kms_token(token)
         elif self._config.auth_mode == AuthMode.OIDC_ONPREM:
-            # Prefer validate_token_async() from async contexts (FastAPI
-            # middleware, route handlers) so DNS / HTTP fetches are
-            # non-blocking.  This sync path is intentionally kept for pure
-            # sync callers (unit tests, CLI tools).
-            try:
-                asyncio.get_running_loop()
-                # Running inside an event loop — block here would stall it.
-                # This is a programmer error; raise RuntimeError (not
-                # PermissionError, which the middleware maps to HTTP 401).
-                raise RuntimeError(
-                    "Called validate_token() with OIDC mode from an async "
-                    "context.  Use validate_token_async() instead so the "
-                    "event loop is not blocked."
-                )
-            except RuntimeError as _no_loop_exc:
-                # asyncio.get_running_loop() raises RuntimeError when no loop
-                # is active — that is the expected sync path.  Re-raise only
-                # if the message is ours (i.e. a running loop was detected).
-                if "validate_token" in str(_no_loop_exc):
-                    raise
-                # No running event loop — safe to use asyncio.run().
-                return asyncio.run(self._validate_oidc_token(token))
+            return self._validate_oidc_token(token)
         else:
             raise PermissionError(f"Unsupported auth mode: {self._config.auth_mode}")
-
-    async def validate_token_async(self, token: str) -> TokenClaims:
-        """Async-safe token validation for use in async contexts.
-
-        Identical to :meth:`validate_token` for dev/JWT/KMS modes (which are
-        non-blocking).  For OIDC mode, executes the full async validation
-        chain (non-blocking DNS resolution, thread-pool HTTP fetches) without
-        stalling the event loop.
-
-        Use this method in FastAPI route handlers and middleware instead of
-        the sync :meth:`validate_token`.
-        """
-        if self._config.auth_mode == AuthMode.OIDC_ONPREM:
-            return await self._validate_oidc_token(token)
-        # Dev / JWT / KMS paths are CPU-bound + tiny; safe to call synchronously.
-        return self.validate_token(token)
 
     def generate_refresh_token(
         self,
@@ -827,38 +736,22 @@ class TokenManager:
         return jwt.encode(payload, secret, algorithm=self._config.jwt_algorithm)
 
     def _validate_jwt_token(self, token: str) -> TokenClaims:
-        """Validate a JWT token, trying the previous secret during rotation.
-
-        Tries ``jwt_secret`` first.  On ``InvalidSignatureError``, falls back
-        to ``jwt_secret_previous`` if configured, enabling zero-downtime secret
-        rotation without invalidating in-flight tokens.
-        """
+        """Validate a JWT token."""
         import jwt
 
-        secrets_to_try = [self._config.jwt_secret.get_secret_value()]
-        if self._config.jwt_secret_previous is not None:
-            secrets_to_try.append(self._config.jwt_secret_previous.get_secret_value())
+        secret = self._config.jwt_secret.get_secret_value()
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=[self._config.jwt_algorithm],
+            )
+        except jwt.ExpiredSignatureError:
+            raise PermissionError("Token has expired")
+        except jwt.InvalidTokenError as exc:
+            raise PermissionError(f"Invalid token: {exc}") from exc
 
-        last_exc: Exception | None = None
-        for i, secret in enumerate(secrets_to_try):
-            try:
-                payload = jwt.decode(
-                    token,
-                    secret,
-                    algorithms=[self._config.jwt_algorithm],
-                )
-                if i > 0:
-                    logger.info("Token validated using previous JWT secret (rotation in progress)")
-                return TokenClaims(**payload)
-            except jwt.ExpiredSignatureError:
-                raise PermissionError("Token has expired")
-            except jwt.InvalidSignatureError as exc:
-                last_exc = exc
-                continue  # Try next secret in the rotation sequence
-            except jwt.InvalidTokenError as exc:
-                raise PermissionError(f"Invalid token: {exc}") from exc
-
-        raise PermissionError("Invalid token: signature verification failed") from last_exc
+        return TokenClaims(**payload)
 
     # ------------------------------------------------------------------
     # KMS exchange mode (AWS KMS or Azure Key Vault)
@@ -1044,7 +937,7 @@ class TokenManager:
             )
         return self._oidc_provider
 
-    async def _validate_oidc_token(self, token: str) -> TokenClaims:
+    def _validate_oidc_token(self, token: str) -> TokenClaims:
         """Validate an OIDC token from a customer's identity provider.
 
         Uses the OIDCProvider to:
@@ -1054,7 +947,7 @@ class TokenManager:
         4. Map standard OIDC claims to IronLayer TokenClaims.
         """
         provider = self._get_oidc_provider()
-        return await provider.validate_token(token)
+        return provider.validate_token(token)
 
 
 class CredentialVault:
@@ -1062,104 +955,44 @@ class CredentialVault:
 
     Secrets are encrypted using Fernet symmetric encryption (AES-128-CBC
     with HMAC-SHA256) before being written to the database. The encryption
-    key is derived from the platform's JWT secret using PBKDF2 with a
-    per-credential random salt (v2 format).
-
-    Ciphertext envelope format (v2):
-        base64url( VERSION[1] || SALT[16] || FERNET_TOKEN )
-    where VERSION = b'\\x02' and SALT is a random 16-byte value generated
-    at encryption time.  A unique salt per ciphertext means that even if
-    the same plaintext is encrypted twice, the derived Fernet keys differ,
-    preventing pre-computation attacks if the master key is compromised.
-
-    Legacy (v1) ciphertexts encrypted with the fixed salt
-    ``b"ironlayer-credential-vault-v1"`` are still accepted by decrypt()
-    for migration safety.  New encryptions always use v2.
+    key is derived from the platform's JWT secret using PBKDF2.
 
     In production, the JWT secret should be a high-entropy value stored
-    in a secrets manager.  The Fernet key derivation ensures that even if
+    in a secrets manager. The Fernet key derivation ensures that even if
     the database is compromised, credential values remain encrypted.
     """
 
-    # Version bytes for the envelope header.
-    _V1 = b"\x01"  # Fixed-salt (legacy)
-    _V2 = b"\x02"  # Per-credential random salt (current)
-
-    # Fixed salt used by the legacy v1 format.
-    _FIXED_SALT = b"ironlayer-credential-vault-v1"
-
     def __init__(self, secret: str) -> None:
-        self._secret = secret.encode("utf-8")
+        self._fernet = self._derive_fernet(secret)
 
     @staticmethod
-    def _derive_fernet_from_key_bytes(key_bytes: bytes) -> "Fernet":
+    def _derive_fernet(secret: str) -> Fernet:
+        """Derive a Fernet key from the JWT secret using PBKDF2."""
         import base64
+        import hashlib
 
         from cryptography.fernet import Fernet
 
-        return Fernet(base64.urlsafe_b64encode(key_bytes))
-
-    def _derive_key(self, salt: bytes) -> bytes:
-        """Derive a 32-byte key from the master secret and *salt* via PBKDF2-SHA256.
-
-        Uses 480_000 iterations per OWASP 2023 recommendations.
-        """
-        import hashlib
-
-        return hashlib.pbkdf2_hmac(
+        # PBKDF2 with a fixed salt (the salt doesn't need to be secret for
+        # this use case -- the JWT secret IS the secret). Using 480_000
+        # iterations per OWASP 2023 recommendations for PBKDF2-SHA256.
+        key_bytes = hashlib.pbkdf2_hmac(
             "sha256",
-            self._secret,
-            salt,
+            secret.encode("utf-8"),
+            b"ironlayer-credential-vault-v1",
             iterations=480_000,
             dklen=32,
         )
+        fernet_key = base64.urlsafe_b64encode(key_bytes)
+        return Fernet(fernet_key)
 
     def encrypt(self, plaintext: str) -> str:
-        """Encrypt a plaintext credential value.
-
-        Returns a base64url-encoded envelope:
-            VERSION[1] || SALT[16] || FERNET_TOKEN
-        where VERSION = ``\\x02`` and SALT is freshly generated per call.
-        """
-        import base64
-        import os
-
-        salt = os.urandom(16)
-        key_bytes = self._derive_key(salt)
-        fernet = self._derive_fernet_from_key_bytes(key_bytes)
-        token = fernet.encrypt(plaintext.encode("utf-8"))
-        envelope = self._V2 + salt + token
-        return base64.urlsafe_b64encode(envelope).decode("ascii")
+        """Encrypt a plaintext credential value."""
+        return self._fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
 
     def decrypt(self, ciphertext: str) -> str:
-        """Decrypt an encrypted credential value.
-
-        Handles both v1 (fixed-salt, legacy) and v2 (per-credential salt)
-        envelope formats for migration safety.
-        """
-        import base64
-
-        raw = base64.urlsafe_b64decode(ciphertext.encode("ascii"))
-        version = raw[:1]
-
-        if version == self._V2:
-            # v2: VERSION[1] || SALT[16] || FERNET_TOKEN
-            salt = raw[1:17]
-            token = raw[17:]
-            key_bytes = self._derive_key(salt)
-        elif version == self._V1:
-            # v1 (legacy): VERSION[1] || FERNET_TOKEN (fixed salt)
-            token = raw[1:]
-            key_bytes = self._derive_key(self._FIXED_SALT)
-        else:
-            # No recognised version byte — treat the whole blob as a bare
-            # Fernet token produced before the versioned envelope was
-            # introduced.  Attempt decryption with the v1 fixed salt.
-            token = raw
-            key_bytes = self._derive_key(self._FIXED_SALT)
-
-        fernet = self._derive_fernet_from_key_bytes(key_bytes)
-        return fernet.decrypt(token).decode("utf-8")
+        """Decrypt an encrypted credential value."""
+        return self._fernet.decrypt(ciphertext.encode("ascii")).decode("utf-8")
 
     async def store_credential(
         self,

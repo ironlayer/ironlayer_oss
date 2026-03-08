@@ -17,20 +17,21 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, date
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import JSON, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.types import TypeDecorator
+
 from core_engine.state.repository import (
     BackfillAuditRepository,
     BackfillCheckpointRepository,
 )
 from core_engine.state.tables import Base
-from sqlalchemy import JSON, DateTime
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.types import TypeDecorator
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -46,7 +47,7 @@ def _patch_columns_for_sqlite() -> None:
 
         def process_result_value(self, value, dialect):  # type: ignore[override]
             if value is not None and value.tzinfo is None:
-                return value.replace(tzinfo=UTC)
+                return value.replace(tzinfo=timezone.utc)
             return value
 
     for table in Base.metadata.tables.values():

@@ -6,14 +6,16 @@ endpoints including RBAC enforcement and error handling.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 
 from core_engine.simulation.impact_analyzer import (
+    AffectedModel,
     ImpactReport,
     ModelRemovalReport,
+    ReferenceSeverity,
 )
 
 # ---------------------------------------------------------------------------

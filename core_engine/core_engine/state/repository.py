@@ -8,7 +8,6 @@ so that generated defaults are populated; the caller is responsible for calling
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -16,7 +15,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, delete, func, select, text, update
+from sqlalchemy import and_, cast, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,8 +24,8 @@ from core_engine.state._repository_utils import (
     _dialect_upsert_nothing,
     _escape_like,
 )
-from core_engine.state.plan_repository import PlanRepository as PlanRepository  # noqa: F401
-from core_engine.state.run_repository import RunRepository as RunRepository  # noqa: F401
+from core_engine.state.plan_repository import PlanRepository
+from core_engine.state.run_repository import RunRepository
 from core_engine.state.tables import (
     AIFeedbackTable,
     APIKeyTable,
@@ -45,6 +44,7 @@ from core_engine.state.tables import (
     LockTable,
     ModelTable,
     ModelTestTable,
+    PlanTable,
     ReconciliationCheckTable,
     ReconciliationScheduleTable,
     RunTable,
@@ -200,21 +200,6 @@ class ModelRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
-    async def get_models_batch(self, model_names: list[str]) -> dict[str, Any]:
-        """Fetch multiple model rows by name in a single ``WHERE name IN (...)`` query.
-
-        Returns a mapping of ``{model_name: ModelTable}`` for only those models
-        that exist in the database.  Absent names are not included.
-        """
-        if not model_names:
-            return {}
-        stmt = select(ModelTable).where(
-            ModelTable.tenant_id == self._tenant_id,
-            ModelTable.model_name.in_(model_names),
-        )
-        result = await self._session.execute(stmt)
-        return {row.model_name: row for row in result.scalars().all()}
-
 
 # ---------------------------------------------------------------------------
 # SnapshotRepository
@@ -361,46 +346,6 @@ class WatermarkRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_watermarks_batch(self, model_names: list[str]) -> dict[str, Any]:
-        """Return the latest watermark for each of the given model names in one query.
-
-        Uses ``WHERE model_name IN (...)`` to avoid N+1 per-model round trips.
-        Returns a mapping of ``{model_name: (partition_start, partition_end)}``.
-        Models that have no watermark are absent from the result.
-        """
-        if not model_names:
-            return {}
-
-        # Subquery: rank watermarks per model by last_updated desc so we can
-        # pick the most-recent row for each model name.
-        ranked = (
-            select(
-                WatermarkTable.model_name,
-                WatermarkTable.partition_start,
-                WatermarkTable.partition_end,
-                func.row_number()
-                .over(
-                    partition_by=WatermarkTable.model_name,
-                    order_by=WatermarkTable.last_updated.desc(),
-                )
-                .label("rn"),
-            )
-            .where(
-                WatermarkTable.tenant_id == self._tenant_id,
-                WatermarkTable.model_name.in_(model_names),
-            )
-            .subquery()
-        )
-
-        stmt = select(
-            ranked.c.model_name,
-            ranked.c.partition_start,
-            ranked.c.partition_end,
-        ).where(ranked.c.rn == 1)
-
-        result = await self._session.execute(stmt)
-        return {row.model_name: (row.partition_start, row.partition_end) for row in result.all()}
-
 
 # ---------------------------------------------------------------------------
 # LockRepository
@@ -498,36 +443,19 @@ class LockRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one() > 0
 
-    async def expire_stale_locks(self, batch_size: int = 1000) -> int:
-        """Delete expired locks in batches to avoid long table locks.
+    async def expire_stale_locks(self) -> int:
+        """Delete all locks whose TTL has elapsed.
 
-        An unbounded ``DELETE … WHERE expires_at < now()`` can hold a
-        write lock on every expired row simultaneously, which becomes a
-        multi-minute stall after an extended downtime.  Chunked deletion
-        caps the lock duration to the time needed to delete at most
-        ``batch_size`` rows per iteration and yields the event loop
-        between batches so other coroutines are not starved.
-
-        Returns the total number of expired locks removed across all batches.
+        Returns the number of expired locks that were removed.
         """
         now = datetime.now(UTC)
-        total = 0
-        while True:
-            stmt = (
-                delete(LockTable)
-                .where(
-                    LockTable.tenant_id == self._tenant_id,
-                    LockTable.locked_at + func.make_interval(0, 0, 0, 0, 0, 0, LockTable.ttl_seconds) < now,
-                )
-                .limit(batch_size)
-            )
-            result = await self._session.execute(stmt)
-            await self._session.flush()
-            total += result.rowcount  # type: ignore[attr-defined]
-            if result.rowcount < batch_size:  # type: ignore[attr-defined]
-                break
-            await asyncio.sleep(0)  # yield to event loop between batches
-        return total
+        stmt = delete(LockTable).where(
+            LockTable.tenant_id == self._tenant_id,
+            LockTable.locked_at + func.make_interval(0, 0, 0, 0, 0, 0, LockTable.ttl_seconds) < now,
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount  # type: ignore[attr-defined, return-value]
 
     async def force_release_lock(
         self,
@@ -897,23 +825,11 @@ class AuditRepository:
         and verifying that ``previous_hash`` matches the preceding entry's
         ``entry_hash``.
 
-        GDPR anonymization handling
-        ---------------------------
-        Entries marked ``is_anonymized=True`` have had their ``actor`` and
-        ``metadata_json`` fields redacted after the original ``entry_hash``
-        was computed.  Recomputing the hash from current field values would
-        produce a different result, causing a spurious mismatch.  For these
-        entries the hash recomputation step is skipped — the stored
-        ``entry_hash`` advances the chain link so all surrounding
-        non-anonymized entries remain fully verifiable.
-
         Returns
         -------
         tuple[bool, int]
             ``(is_valid, entries_checked)`` where ``is_valid`` is ``True``
-            only if every non-anonymized entry's hash and chain link are
-            intact.  ``entries_checked`` counts only entries whose hash was
-            actively verified (anonymized entries do not contribute).
+            only if every entry's hash matches and the chain links are intact.
         """
         stmt = (
             select(AuditLogTable)
@@ -928,7 +844,6 @@ class AuditRepository:
             return (True, 0)
 
         checked = 0
-        anonymized_skipped = 0
         previous_hash: str | None = None
 
         for entry in entries:
@@ -942,14 +857,6 @@ class AuditRepository:
                     entry.previous_hash,
                 )
                 return (False, checked)
-
-            # Anonymized entries: hash was computed from original (now erased)
-            # data — recomputation is not possible.  Use the stored entry_hash
-            # to advance the chain and continue verifying surrounding entries.
-            if entry.is_anonymized:
-                previous_hash = entry.entry_hash
-                anonymized_skipped += 1
-                continue
 
             # Recompute the entry hash and compare.
             expected_hash = self._compute_hash(
@@ -975,24 +882,10 @@ class AuditRepository:
             previous_hash = entry.entry_hash
             checked += 1
 
-        if anonymized_skipped:
-            logger.info(
-                "verify_chain: %d entries verified, %d anonymized entries skipped (GDPR erasure)",
-                checked,
-                anonymized_skipped,
-            )
-
         return (True, checked)
 
     async def cleanup_old_entries(self, retention_days: int) -> int:
-        """Delete audit log entries older than *retention_days* for this tenant.
-
-        Returns the number of rows deleted.
-
-        Note: this deletes the oldest entries in the chain.  Because
-        ``verify_chain`` queries entries oldest-first up to a *limit*, deleting
-        the bottom of the chain does not affect verification of recent entries.
-        """
+        """Delete audit log entries older than retention_days. Returns count deleted."""
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         result = await self._session.execute(
             delete(AuditLogTable)
@@ -1002,19 +895,15 @@ class AuditRepository:
         return result.rowcount
 
     async def anonymize_user_entries(self, user_id: str) -> int:
-        """GDPR right-to-erasure: replace user PII in audit logs with ``[REDACTED]``.
+        """GDPR right-to-erasure: replace user PII in audit logs with [REDACTED].
 
-        Sets ``actor`` to ``"[REDACTED]"``, clears ``metadata_json``, and
-        marks ``is_anonymized=True`` so :meth:`verify_chain` can advance the
-        hash-chain through these entries without treating them as tampering.
-
-        Returns the number of rows updated.
+        Preserves audit counts and structure but removes identifying information.
         """
         result = await self._session.execute(
             update(AuditLogTable)
             .where(AuditLogTable.tenant_id == self._tenant_id)
             .where(AuditLogTable.actor == user_id)
-            .values(actor="[REDACTED]", metadata_json=None, is_anonymized=True)
+            .values(actor="[REDACTED]", metadata_json=None)
         )
         return result.rowcount
 
@@ -2868,12 +2757,12 @@ class APIKeyRepository:
 
         Returns ``(plaintext, prefix, hash)`` where:
         - ``plaintext`` is ``bmkey.<random-hex>`` (shown once to user)
-        - ``prefix`` is the first 16 characters of the random part
+        - ``prefix`` is the first 8 characters of the random part
         - ``hash`` is the SHA-256 hash of the full plaintext
         """
         random_part = uuid.uuid4().hex + uuid.uuid4().hex  # 64 hex chars
         plaintext = f"{self._KEY_PREFIX_CONVENTION}{random_part}"
-        prefix = random_part[:16]
+        prefix = random_part[:8]
         key_hash = self._hash_key(plaintext)
         return plaintext, prefix, key_hash
 
@@ -3873,7 +3762,7 @@ class EventOutboxRepository:
         event_type: str,
         payload: dict[str, Any],
         correlation_id: str,
-    ) -> EventOutboxTable:
+    ) -> "EventOutboxTable":
         """Insert a pending outbox entry within the current transaction.
 
         The caller is responsible for committing the transaction.
@@ -3891,7 +3780,7 @@ class EventOutboxRepository:
         await self._session.flush()
         return row
 
-    async def get_pending(self, limit: int = 100) -> list[EventOutboxTable]:
+    async def get_pending(self, limit: int = 100) -> list["EventOutboxTable"]:
         """Return pending entries ordered by ``created_at`` (oldest first)."""
         from core_engine.state.tables import EventOutboxTable
 
@@ -3904,21 +3793,10 @@ class EventOutboxRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def count_pending(self) -> int:
-        """Return the number of pending outbox entries."""
-        from core_engine.state.tables import EventOutboxTable
-
-        stmt = select(func.count()).select_from(EventOutboxTable).where(
-            EventOutboxTable.status == "pending"
-        )
-        result = await self._session.execute(stmt)
-        return result.scalar_one()
-
     async def mark_delivered(self, entry_id: int) -> None:
         """Mark an outbox entry as successfully delivered."""
-        from datetime import UTC, datetime
-
         from core_engine.state.tables import EventOutboxTable
+        from datetime import UTC, datetime
 
         stmt = (
             update(EventOutboxTable)
@@ -3928,53 +3806,17 @@ class EventOutboxRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
-    async def mark_delivered_batch(self, entry_ids: list[int]) -> None:
-        """Mark multiple outbox entries as delivered in a single UPDATE.
-
-        Parameters
-        ----------
-        entry_ids:
-            List of outbox entry primary-key IDs to mark delivered.
-        """
-        if not entry_ids:
-            return
-        from datetime import UTC, datetime
-
+    async def mark_failed(self, entry_id: int, error: str) -> None:
+        """Increment attempt count and record the last error message."""
         from core_engine.state.tables import EventOutboxTable
-
-        stmt = (
-            update(EventOutboxTable)
-            .where(EventOutboxTable.id.in_(entry_ids))
-            .values(status="delivered", delivered_at=datetime.now(UTC))
-        )
-        await self._session.execute(stmt)
-        await self._session.flush()
-
-    async def mark_failed(
-        self, entry_id: int, error: str, *, permanent: bool = False
-    ) -> None:
-        """Increment attempt count and record the last error message.
-
-        Parameters
-        ----------
-        permanent:
-            When True the entry status is set to 'failed' so it is no
-            longer returned by get_pending or counted by count_pending.
-            Use this when the entry has exceeded max_attempts.
-        """
-        from core_engine.state.tables import EventOutboxTable
-
-        values: dict = {
-            "attempts": EventOutboxTable.attempts + 1,
-            "last_error": error[:1024],
-        }
-        if permanent:
-            values["status"] = "failed"
 
         stmt = (
             update(EventOutboxTable)
             .where(EventOutboxTable.id == entry_id)
-            .values(**values)
+            .values(
+                attempts=EventOutboxTable.attempts + 1,
+                last_error=error[:1024],
+            )
         )
         await self._session.execute(stmt)
         await self._session.flush()
@@ -3993,27 +3835,6 @@ class EventOutboxRepository:
             EventOutboxTable.status == "delivered",
             EventOutboxTable.delivered_at.is_not(None),
             EventOutboxTable.delivered_at < cutoff,
-        )
-        result = await self._session.execute(stmt)
-        await self._session.flush()
-        return result.rowcount
-
-    async def cleanup_failed(self, older_than_hours: int = 24) -> int:
-        """Remove permanently failed entries older than ``older_than_hours``.
-
-        Without periodic cleanup, entries marked ``status='failed'`` by
-        :meth:`mark_failed(permanent=True)` accumulate indefinitely.
-
-        Returns the number of rows deleted.
-        """
-        from datetime import UTC, datetime, timedelta
-
-        from core_engine.state.tables import EventOutboxTable
-
-        cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
-        stmt = delete(EventOutboxTable).where(
-            EventOutboxTable.status == "failed",
-            EventOutboxTable.created_at < cutoff,
         )
         result = await self._session.execute(stmt)
         await self._session.flush()

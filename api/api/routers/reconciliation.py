@@ -14,10 +14,9 @@ from typing import Any
 from core_engine.license.feature_flags import Feature
 from core_engine.state.repository import ReconciliationScheduleRepository
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, TenantDep, require_feature
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.reconciliation_service import ReconciliationService
 
@@ -68,20 +67,6 @@ class ScheduleRequest(BaseModel):
         default=True,
         description="Whether the schedule is active.",
     )
-
-    @field_validator("cron_expression")
-    @classmethod
-    def _validate_cron(cls, v: str) -> str:
-        if len(v) > 100:
-            raise ValueError("Cron expression must not exceed 100 characters.")
-        try:
-            from croniter import croniter
-
-            if not croniter.is_valid(v):
-                raise ValueError(f"Invalid cron expression: {v!r}.")
-        except ImportError:
-            pass  # croniter not installed — skip validation
-        return v
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +124,7 @@ async def resolve_discrepancy(
         resolution_note=body.resolution_note,
     )
     if result is None:
-        raise not_found_404("Reconciliation check", check_id)
+        raise HTTPException(status_code=404, detail=f"Reconciliation check {check_id} not found")
     return result
 
 
@@ -209,7 +194,10 @@ async def resolve_schema_drift(
         resolution_note=body.resolution_note,
     )
     if result is None:
-        raise not_found_404("Schema drift check", str(check_id))
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schema drift check {check_id} not found",
+        )
     return result
 
 

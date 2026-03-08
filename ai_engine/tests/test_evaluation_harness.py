@@ -7,9 +7,11 @@ comparison — all using mock engines to isolate harness logic.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+
 from ai_engine.evaluation.gold_dataset import GoldDataset, GoldDatasetEntry
 from ai_engine.evaluation.harness import EvaluationHarness, EvaluationReport
 from ai_engine.evaluation.metrics import (
@@ -23,8 +25,8 @@ from ai_engine.models.responses import (
     CostPredictResponse,
     OptimizeSQLResponse,
     RiskScoreResponse,
-    SemanticClassifyResponse,
     SQLSuggestion,
+    SemanticClassifyResponse,
 )
 
 # ---------------------------------------------------------------------------
@@ -35,13 +37,11 @@ from ai_engine.models.responses import (
 def _make_classifier(change_type: str = "non_breaking", confidence: float = 0.9):
     """Build a mock classifier that always returns the given type."""
     mock = MagicMock()
-    mock.classify = AsyncMock(
-        return_value=SemanticClassifyResponse(
-            change_type=change_type,
-            confidence=confidence,
-            requires_full_rebuild=False,
-            impact_scope="minor",
-        )
+    mock.classify.return_value = SemanticClassifyResponse(
+        change_type=change_type,
+        confidence=confidence,
+        requires_full_rebuild=False,
+        impact_scope="minor",
     )
     return mock
 
@@ -74,6 +74,7 @@ def _make_risk_scorer(approval_required: bool = False):
 
 def _make_optimizer(suggestions: list[str] | None = None):
     """Build a mock optimizer."""
+    mock = MagicMock()
     sugs = [
         SQLSuggestion(
             suggestion_type=s,
@@ -82,8 +83,7 @@ def _make_optimizer(suggestions: list[str] | None = None):
         )
         for s in (suggestions or [])
     ]
-    mock = MagicMock()
-    mock.optimize = AsyncMock(return_value=OptimizeSQLResponse(suggestions=sugs))
+    mock.optimize.return_value = OptimizeSQLResponse(suggestions=sugs)
     return mock
 
 
@@ -158,7 +158,7 @@ class TestEvaluationReportStructure:
 class TestHarnessEvaluation:
     """The harness must correctly dispatch to engines and aggregate results."""
 
-    async def test_perfect_classifier_produces_high_f1(self) -> None:
+    def test_perfect_classifier_produces_high_f1(self) -> None:
         """If the mock classifier always returns the correct type, F1 ≈ 1.0."""
         ds = _tiny_dataset()
         entries = ds.get_all()
@@ -175,7 +175,7 @@ class TestHarnessEvaluation:
                     impact_scope="mock",
                 )
             )
-        classifier.classify = AsyncMock(side_effect=side_effects)
+        classifier.classify.side_effect = side_effects
 
         harness = EvaluationHarness(
             classifier=classifier,
@@ -183,13 +183,13 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(ds)
+        report = harness.run_full_evaluation(ds)
 
         assert report.entries_evaluated == 3
         assert report.classifier_accuracy == 1.0
         assert report.individual_failures == []
 
-    async def test_wrong_classifier_produces_failures(self) -> None:
+    def test_wrong_classifier_produces_failures(self) -> None:
         """If the classifier always says 'cosmetic', non-cosmetic entries fail."""
         harness = EvaluationHarness(
             classifier=_make_classifier(change_type="cosmetic"),
@@ -197,14 +197,14 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(_tiny_dataset())
+        report = harness.run_full_evaluation(_tiny_dataset())
 
         # 1 correct (cosmetic entry), 2 failures (breaking + non_breaking).
         assert report.entries_evaluated == 3
         assert len(report.individual_failures) == 2
         assert report.classifier_accuracy < 1.0
 
-    async def test_empty_dataset_returns_failing_report(self) -> None:
+    def test_empty_dataset_returns_failing_report(self) -> None:
         """Empty dataset produces a non-passing report."""
         ds = GoldDataset()
         ds.ENTRIES = []
@@ -215,15 +215,15 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(ds)
+        report = harness.run_full_evaluation(ds)
 
         assert report.overall_pass is False
         assert report.entries_evaluated == 0
 
-    async def test_classifier_exception_logged_as_failure(self) -> None:
+    def test_classifier_exception_logged_as_failure(self) -> None:
         """If the classifier raises, the entry is logged as a failure."""
         classifier = MagicMock()
-        classifier.classify = AsyncMock(side_effect=RuntimeError("model failed"))
+        classifier.classify.side_effect = RuntimeError("model failed")
 
         harness = EvaluationHarness(
             classifier=classifier,
@@ -231,12 +231,12 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(_tiny_dataset())
+        report = harness.run_full_evaluation(_tiny_dataset())
 
         assert len(report.individual_failures) == 3
         assert any("error" in f for f in report.individual_failures)
 
-    async def test_cost_predictor_errors_tracked(self) -> None:
+    def test_cost_predictor_errors_tracked(self) -> None:
         """Cost predictor failures are counted in cost_metrics."""
         cost = MagicMock()
         cost.predict.side_effect = ValueError("bad input")
@@ -247,12 +247,12 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(_tiny_dataset())
+        report = harness.run_full_evaluation(_tiny_dataset())
 
         assert report.cost_metrics["errors"] == 3
         assert report.cost_metrics["error_rate"] > 0
 
-    async def test_per_category_breakdown_computed(self) -> None:
+    def test_per_category_breakdown_computed(self) -> None:
         """Per-category accuracy should be tracked for each category."""
         harness = EvaluationHarness(
             classifier=_make_classifier(change_type="cosmetic"),
@@ -260,13 +260,13 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=_make_optimizer(),
         )
-        report = await harness.run_full_evaluation(_tiny_dataset())
+        report = harness.run_full_evaluation(_tiny_dataset())
 
         assert "cosmetic" in report.per_category_breakdown
         assert report.per_category_breakdown["cosmetic"]["accuracy"] == 1.0
         assert report.per_category_breakdown["breaking"]["accuracy"] == 0.0
 
-    async def test_optimizer_suggestion_matching(self) -> None:
+    def test_optimizer_suggestion_matching(self) -> None:
         """Optimizer match rate tracks expected suggestion type presence."""
         optimizer = _make_optimizer(suggestions=["add_column"])
 
@@ -276,7 +276,7 @@ class TestHarnessEvaluation:
             risk_scorer=_make_risk_scorer(),
             optimizer=optimizer,
         )
-        report = await harness.run_full_evaluation(_tiny_dataset())
+        report = harness.run_full_evaluation(_tiny_dataset())
 
         # t_003 expects "add_column" and optimizer returns it.
         assert report.optimizer_metrics["suggestion_match_rate"] > 0

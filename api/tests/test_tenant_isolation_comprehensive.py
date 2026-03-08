@@ -30,7 +30,6 @@ from api.dependencies import (
     get_tenant_session,
 )
 from api.main import create_app
-from api.test_utils import set_app_state_for_test
 from api.services.ai_client import AIServiceClient
 
 pytestmark = pytest.mark.usefixtures("bypass_feature_gate")
@@ -117,19 +116,17 @@ def _app(_mock_session: AsyncMock) -> Any:
     async def _override_session():
         yield _mock_session
 
-    _test_settings = APISettings(
-        host="0.0.0.0",
-        port=8000,
-        debug=True,
-        database_url="postgresql+asyncpg://test:test@localhost:5432/test",
-        ai_engine_url="http://localhost:8001",
-        ai_engine_timeout=5.0,
-        platform_env="dev",
-        cors_origins=["http://localhost:3000"],
-    )
-
     def _override_settings():
-        return _test_settings
+        return APISettings(
+            host="0.0.0.0",
+            port=8000,
+            debug=True,
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            ai_engine_url="http://localhost:8001",
+            ai_engine_timeout=5.0,
+            platform_env="dev",
+            cors_origins=["http://localhost:3000"],
+        )
 
     mock_ai = AsyncMock(spec=AIServiceClient)
     mock_ai.semantic_classify = AsyncMock(return_value={})
@@ -144,14 +141,6 @@ def _app(_mock_session: AsyncMock) -> Any:
     mock_metering.record = MagicMock()
     mock_metering.flush = MagicMock(return_value=0)
     mock_metering.pending_count = 0
-
-    set_app_state_for_test(
-        application,
-        settings=_test_settings,
-        session=_mock_session,
-        ai_client=mock_ai,
-        metering=mock_metering,
-    )
 
     application.dependency_overrides[get_db_session] = _override_session
     application.dependency_overrides[get_tenant_session] = _override_session

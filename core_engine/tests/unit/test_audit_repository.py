@@ -14,16 +14,20 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+import hashlib
+import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from core_engine.state.repository import AuditRepository
-from core_engine.state.tables import Base
-from sqlalchemy import JSON, DateTime
+from sqlalchemy import JSON, DateTime, event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.types import TypeDecorator
+
+from core_engine.state.repository import AuditRepository
+from core_engine.state.tables import AuditLogTable, Base
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -48,7 +52,7 @@ def _patch_columns_for_sqlite() -> None:
 
         def process_result_value(self, value, dialect):  # type: ignore[override]
             if value is not None and value.tzinfo is None:
-                return value.replace(tzinfo=UTC)
+                return value.replace(tzinfo=timezone.utc)
             return value
 
     for table in Base.metadata.tables.values():
@@ -298,7 +302,7 @@ class TestAuditHashComputation:
     """Verify the static hash computation is deterministic."""
 
     def test_deterministic_hash(self):
-        now = datetime(2025, 1, 1, tzinfo=UTC)
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
         h1 = AuditRepository._compute_hash(
             tenant_id="t1",
             actor="alice",
@@ -323,7 +327,7 @@ class TestAuditHashComputation:
         assert len(h1) == 64  # SHA-256 hex length
 
     def test_different_inputs_different_hash(self):
-        now = datetime(2025, 1, 1, tzinfo=UTC)
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
         h1 = AuditRepository._compute_hash(
             tenant_id="t1",
             actor="alice",
@@ -347,7 +351,7 @@ class TestAuditHashComputation:
         assert h1 != h2
 
     def test_none_fields_handled(self):
-        now = datetime(2025, 1, 1, tzinfo=UTC)
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
         h = AuditRepository._compute_hash(
             tenant_id="t1",
             actor="alice",

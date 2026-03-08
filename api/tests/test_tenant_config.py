@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 
 from ai_engine.models.requests import (
     CostPredictRequest,
@@ -75,7 +76,7 @@ class TestRequestModelsLLMEnabled:
 class TestLLMClientLLMEnabled:
     """Verify LLMClient respects per-request llm_enabled flag."""
 
-    async def test_classify_change_skips_when_disabled(self) -> None:
+    def test_classify_change_skips_when_disabled(self) -> None:
         """When llm_enabled=False, classify_change returns None."""
         from unittest.mock import MagicMock
 
@@ -94,13 +95,12 @@ class TestLLMClientLLMEnabled:
         client._max_tokens = 100
         client._timeout = 5.0
         client._client = MagicMock()
-        client._budget_guard = None
 
         # Should return None when llm_enabled=False
-        result = await client.classify_change("old", "new", llm_enabled=False)
+        result = client.classify_change("old", "new", llm_enabled=False)
         assert result is None
 
-    async def test_suggest_optimization_skips_when_disabled(self) -> None:
+    def test_suggest_optimization_skips_when_disabled(self) -> None:
         """When llm_enabled=False, suggest_optimization returns None."""
         from unittest.mock import MagicMock
 
@@ -112,9 +112,8 @@ class TestLLMClientLLMEnabled:
         client._max_tokens = 100
         client._timeout = 5.0
         client._client = MagicMock()
-        client._budget_guard = None
 
-        result = await client.suggest_optimization("SELECT 1", llm_enabled=False)
+        result = client.suggest_optimization("SELECT 1", llm_enabled=False)
         assert result is None
 
 

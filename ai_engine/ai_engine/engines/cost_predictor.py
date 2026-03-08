@@ -15,7 +15,6 @@ import numpy as np
 
 from ai_engine.ml.cost_model import CostModelTrainer
 from ai_engine.ml.feature_extractor import extract_features
-from ai_engine.ml.model_registry import ModelRegistry
 from ai_engine.models.requests import CostPredictRequest
 from ai_engine.models.responses import CostPredictResponse
 
@@ -74,84 +73,30 @@ def _compute_confidence_band(
 class CostPredictor:
     """Predict execution cost and runtime for a model run."""
 
-    def __init__(
-        self,
-        model_path: Path | None = None,
-        registry: ModelRegistry | None = None,
-    ) -> None:
+    def __init__(self, model_path: Path | None = None) -> None:
         self._model = None
         self._model_path = model_path
-        self._registry = registry
 
-        # BL-100: Lazy loading — model is NOT loaded at startup.
-        # Loading is deferred to the first predict() call to avoid slow cold
-        # starts and long replica scale-up times.
-        # In pure-heuristic mode (no path, no registry) the predictor is
-        # immediately ready because no model file is needed.
-        self._initialized: bool = model_path is None and registry is None
-
-    # ------------------------------------------------------------------
-    # BL-100: Lazy loading helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_loaded(self) -> None:
-        """Load the model on first use (BL-100: lazy loading).
-
-        Idempotent — subsequent calls after initialisation are no-ops.
-        After this method returns, ``self._initialized`` is always ``True``.
-        """
-        if self._initialized:
-            return
-
-        if self._model_path is not None:
-            # Explicit path takes precedence; registry is used only for
-            # prediction recording, not for loading.
-            self._model = CostModelTrainer.load(self._model_path)
+        if model_path is not None:
+            self._model = CostModelTrainer.load(model_path)
             if self._model is not None:
-                logger.info("Loaded trained cost model from %s (lazy)", self._model_path)
+                logger.info("Loaded trained cost model from %s", model_path)
             else:
                 logger.info(
-                    "No trained cost model at %s -- using heuristic fallback (lazy)",
-                    self._model_path,
+                    "No trained cost model at %s -- using heuristic fallback",
+                    model_path,
                 )
-        elif self._registry is not None:
-            # No direct path provided; attempt to load via registry instead.
-            try:
-                self._model = self._registry.load_model("cost_model")
-                logger.info("Loaded cost model via ModelRegistry (lazy)")
-            except FileNotFoundError:
-                logger.info(
-                    "No cost_model found in registry -- using heuristic fallback (lazy)"
-                )
-
-        self._initialized = True
 
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
 
     @property
-    def is_ready(self) -> bool:
-        """``True`` once model loading has been attempted at least once.
-
-        Used by the ``/readiness`` endpoint (BL-100) to signal that this
-        replica has served at least one cost prediction and is fully warm.
-        Immediately ``True`` in heuristic-only mode (no model path configured).
-        """
-        return self._initialized
-
-    @property
     def has_trained_model(self) -> bool:
-        """``True`` if a trained scikit-learn model is loaded.
-
-        Note: with lazy loading (BL-100) this is ``False`` until the first
-        :meth:`predict` call triggers loading.
-        """
         return self._model is not None
 
     def predict(self, request: CostPredictRequest) -> CostPredictResponse:
         """Return cost / runtime prediction for the requested model run."""
-        self._ensure_loaded()  # BL-100: load on first use
         if self._model is not None:
             return self._model_predict(request)
         return self._heuristic_predict(request)
@@ -230,19 +175,6 @@ class CostPredictor:
 
         confidence = 0.8
         lower, upper, label = _compute_confidence_band(round(cost_usd, 4), confidence)
-
-        # Record prediction for drift tracking when a registry is wired in.
-        if self._registry is not None:
-            self._registry.record_prediction(
-                model_name="cost_model",
-                features={
-                    "partition_count": float(request.partition_count),
-                    "log1p_data_volume_bytes": volume_log,
-                    "num_workers": workers,
-                    "cluster_size": request.cluster_size,
-                },
-                prediction=round(cost_usd, 4),
-            )
 
         return CostPredictResponse(
             estimated_runtime_minutes=round(runtime_minutes, 2),

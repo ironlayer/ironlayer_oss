@@ -1,76 +1,166 @@
-# CLAUDE.md — IronLayer OSS (Public Repo)
+# CLAUDE.md — IronLayer Infra (Private Repo, Master Rules)
 
-> **Work tracking lives in the private repo.**
-> Before making any change here, the corresponding backlog item must be
-> `[IN-PROGRESS]` in `ironlayer_infra/BACKLOG.md`.
+> This is the canonical source for all AI agent rules. Changes here propagate to
+> `ironlayer_OSS` via `sync-to-public.yml` or manual `make sync-ai`.
 
 ---
 
-## Quick Rules
+## Non-Negotiable Workflow Rules
 
-1. **Check the backlog first** — all work is tracked in `ironlayer_infra/BACKLOG.md`.
-   Do not write code until the item is marked `[IN-PROGRESS]` there.
-2. **This repo is public (Apache 2.0)** — no internal URLs, no private tokens, no
-   infra-specific config, no Terraform backend secrets. Run `sync-to-public.yml`
-   checks mentally before committing.
-3. **No stubs, no TODOs, no placeholders** — every commit must be production-complete.
-4. **Run tests before marking done** (see commands below).
-5. **Update `ironlayer_infra/LESSONS.md` and `MEMORY.md`** after completing work
-   if there are architectural or process insights.
+These rules apply to every AI agent (Claude, Cursor, Copilot, etc.) working in
+any IronLayer repo. They cannot be overridden by task descriptions or user
+instructions within a session.
+
+### 1. All Work Starts in the Backlog
+
+**Before writing a single line of code or making any file change:**
+
+1. Open `BACKLOG.md` (this repo, `/ironlayer_infra/BACKLOG.md`).
+2. Find the item that matches your task. If it doesn't exist, **add it first**.
+3. Change its status to `[IN-PROGRESS]` and record the date (`<!-- started: YYYY-MM-DD -->`).
+4. Only then begin implementation.
+
+**No exceptions** — not for "quick fixes", not for "one-line changes".
+If the item is truly trivial (comment/typo), add it to the backlog as `[DONE]` retroactively
+with a note. The point is a complete audit trail, not bureaucracy.
+
+### 2. Verify Dependencies Before Touching Code
+
+Every backlog item lists `Depends-on:` items. **All dependencies must be
+`[DONE]` before the dependent item can move to `[IN-PROGRESS]`**. If you need
+to unblock a dependency first, go fix that item, mark it done, then return.
+
+### 3. OSS Repo Changes Must Flow Through This Backlog
+
+Any change to `ironlayer_OSS` must be tracked here first. The OSS repo is
+public and Apache-licensed — broken commits, stubs, or incomplete code have
+public consequences.
+
+### 4. No Stubs, No TODOs, No Softening
+
+Every implementation must be **fully functional and production-complete**:
+- No `# TODO: implement this`
+- No `pass` where logic belongs
+- No `raise NotImplementedError`
+- No placeholder strings like `"to be implemented"`
+- No stripped-down versions "for now"
+
+If the full implementation is too large for one session, split the backlog
+item into sub-items and complete each fully before marking done.
+
+### 5. Run the Verification Suite Before Marking Done
+
+Before marking any backlog item `[DONE]`, run and pass:
+
+```bash
+# From the relevant package root
+cd /path/to/package
+"${VENV}/python" -m ruff check .          # zero errors
+"${VENV}/python" -m mypy . --ignore-missing-imports  # zero new errors
+"${VENV}/python" -m pytest tests/ -v -x   # all tests pass
+```
+
+Where `VENV=/Users/aronriley/Developer/GitHub\ Repos/IronLayer/ironlayer_OSS/.venv/bin`.
+
+**Never mark an item done while tests are failing or new lint errors exist.**
+
+### 6. Update Memory and Lessons After Completion
+
+After marking a backlog item `[DONE]`:
+
+1. If the item revealed a recurring pattern, anti-pattern, or non-obvious
+   constraint, add a dated entry to `LESSONS.md`.
+2. If the item changed any architectural fact (added Redis, changed auth
+   flow, etc.), update `MEMORY.md` in the `.claude/projects/` directory.
+3. If the fix revealed a new gap (e.g., fixing a bug exposed another bug),
+   add the new gap to `BACKLOG.md` immediately.
 
 ---
 
 ## Build and Test Commands
 
 ```bash
-# CRITICAL: pytest shebang is broken — always use python -m pytest
+# ── Python (always use venv python, not system python) ──────────────────────
 VENV="/Users/aronriley/Developer/GitHub Repos/IronLayer/ironlayer_OSS/.venv/bin"
 
-# Run tests (per package)
-cd api        && "${VENV}/python" -m pytest tests/ -v -x
-cd ai_engine  && "${VENV}/python" -m pytest tests/ -v -x
-cd core_engine && "${VENV}/python" -m pytest tests/ -v -x
-cd cli        && PYTHONPATH=../core_engine "${VENV}/python" -m pytest tests/ -v -x
+# IMPORTANT: pytest shebang is broken — always use python -m pytest
+"${VENV}/python" -m pytest tests/ -v -x
+"${VENV}/python" -m pytest tests/ --cov=<pkg> --cov-report=term-missing
 
-# With coverage
-"${VENV}/python" -m pytest tests/ --cov=<package_name> --cov-report=term-missing
-
-# Lint
+# Lint and type-check
 "${VENV}/python" -m ruff check .
-"${VENV}/python" -m ruff check . --fix
-
-# Type-check
+"${VENV}/python" -m ruff check . --fix          # auto-fix safe issues
 "${VENV}/python" -m mypy . --ignore-missing-imports
 
-# Makefile targets (from repo root)
-make test-unit
-make lint
-make format
+# ── Make targets (from repo root) ───────────────────────────────────────────
+make test-unit          # all unit tests
+make lint               # ruff + mypy
+make format             # ruff format + ruff --fix
+make migrate            # run Alembic migrations
+
+# ── CLI commands ────────────────────────────────────────────────────────────
+ironlayer plan ./project HEAD~1 HEAD
+ironlayer diff ./project
+ironlayer status
 ```
 
 ---
 
-## Package Layout
+## Repo Placement Rules
+
+| Work type | Correct repo |
+|-----------|-------------|
+| API, auth, billing, webhooks, middleware | `ironlayer_OSS/api/` |
+| AI advisory engines, ML models | `ironlayer_OSS/ai_engine/` |
+| Execution engine, ORM, state, DAG | `ironlayer_OSS/core_engine/` |
+| CLI commands | `ironlayer_OSS/cli/` |
+| Rust validation rules | `ironlayer_OSS/check_engine/` |
+| Deployment, Terraform, dbt, extractors | `ironlayer_infra/` |
+| Backlog, tracking, lessons, rules | `ironlayer_infra/` (this repo) |
+
+---
+
+## Package Path Reference
 
 ```
-api/           ironlayer-api   v0.1.0  FastAPI control plane (port 8000)
-ai_engine/     ai-engine       v0.1.0  Advisory AI service (port 8001)
-core_engine/   ironlayer-core  v0.3.0  Execution engine + ORM + state
-cli/           ironlayer       v0.2.0  Typer CLI
-check_engine/  Rust/PyO3       —       90+ validation rules
-frontend/      React + Vite    —       SPA (port 3000)
+Monorepo root: /Users/aronriley/Developer/GitHub Repos/IronLayer/ironlayer_OSS/
+venv:          .venv/  (Python 3.12)
+venv python:   .venv/bin/python  (USE THIS — not .venv/bin/pytest, shebang is broken)
+
+api/           package: ironlayer-api   v0.1.0   port 8000
+ai_engine/     package: ai-engine       v0.1.0   port 8001
+core_engine/   package: ironlayer-core  v0.3.0
+cli/           package: ironlayer       v0.2.0
+check_engine/  Rust + PyO3
+frontend/      React + Vite             port 3000
 ```
 
 ---
 
-## Architecture Notes (quick ref)
+## Architecture Quick Reference
 
-- Auth: dev / JWT / KMS / OIDC — configured via `AUTH_MODE` env var
-- RLS: PostgreSQL row-level security via `app.tenant_id` (set in `dependencies.py`)
-- AI engine: advisory only — never mutates plans or executes SQL
-- Determinism: core invariant — same input must always produce identical plan JSON
-- Feature gates: `require_feature()` FastAPI dependency injection
-- Rate limiting: in-memory per-replica (not Redis-backed — see backlog)
-- Token revocation: 30s TTL in-memory cache (not cross-replica — see backlog)
+| Concern | Implementation | Notes |
+|---------|---------------|-------|
+| Auth modes | dev / JWT / KMS / OIDC | Configured via `AUTH_MODE` env var |
+| Multi-tenancy | PostgreSQL RLS via `app.tenant_id` | Set in `dependencies.py` |
+| Rate limiting | In-memory per-replica | **KNOWN GAP** — Redis needed for multi-replica |
+| Token revocation | 30s in-memory TTL | **KNOWN GAP** — not shared across replicas |
+| AI engine role | Advisory only, never mutates | Enforced architecturally |
+| Feature gates | `require_feature()` dependency | 3 tiers: community/team/enterprise |
+| Credential encryption | Fernet + PBKDF2 (480k rounds) | Key derived from JWT_SECRET (**GAP**) |
+| Event bus | In-memory | **KNOWN GAP** — events lost on crash |
+| Determinism | Tested via `TestDeterminism` gate | Core invariant — never break |
 
-For complete architecture context, see `ironlayer_infra/CLAUDE.md`.
+---
+
+## Known Permanent Constraints
+
+1. **Never use `python` or `pip` directly** — use `uv run` in CI/Makefile or
+   the absolute venv path locally.
+2. **Never edit AI configs in individual repos** — the workspace repo
+   (`iron-layer-dev-workspace`) is the canonical source; we mirror here for
+   infra-specific enforcement.
+3. **`sync-to-public.yml` strips private content** — never put infra secrets,
+   Terraform state, or internal deployment docs in paths that sync to OSS.
+4. **OSS repo is Apache 2.0 licensed** — all OSS changes must be license-compatible.
+5. **All Claude/LLM calls go through the budget guard** — never bypass `EXODUS_BUDGET_LIMIT`.

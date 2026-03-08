@@ -12,7 +12,7 @@ so we patch at the source module: api.services.quota_service.QuotaService.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient

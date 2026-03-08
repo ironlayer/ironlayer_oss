@@ -13,6 +13,7 @@ import threading
 import time
 
 import pytest
+
 from core_engine.telemetry.profiling import (
     ProfileCollector,
     ProfileResult,

@@ -75,7 +75,7 @@ async def ironlayer_plan(
         dag=dag,
         base_ref=base_ref,
         target_ref=target_ref,
-        repo_path=str(repo_path),
+        repo_path=str(repo),
     )
 
     if not changes.changed_models:

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
+
 from core_engine.parser.sql_guard import (
     DangerousOperation,
-    Severity,
     SQLGuardConfig,
     SQLGuardViolation,
+    Severity,
     UnsafeSQLError,
     assert_sql_safe,
     check_sql_safety,

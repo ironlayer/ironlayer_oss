@@ -10,20 +10,27 @@ No external services (Postgres, Databricks) are required.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 import pytest
+
 from core_engine.diff.structural_diff import compute_structural_diff
 from core_engine.graph.dag_builder import build_dag
 from core_engine.loader.model_loader import load_models_from_directory
+from core_engine.models.diff import DiffResult
 from core_engine.models.model_definition import (
+    Materialization,
     ModelDefinition,
     ModelKind,
 )
 from core_engine.models.plan import (
     DateRange,
+    Plan,
     PlanStep,
+    PlanSummary,
     RunType,
     compute_deterministic_id,
 )
@@ -672,7 +679,7 @@ class TestPlanSerialization:
         assert restored.summary.models_changed == plan.summary.models_changed
         assert len(restored.steps) == len(plan.steps)
 
-        for orig, rest in zip(plan.steps, restored.steps, strict=False):
+        for orig, rest in zip(plan.steps, restored.steps):
             assert orig.step_id == rest.step_id
             assert orig.model == rest.model
             assert orig.run_type == rest.run_type
@@ -976,8 +983,8 @@ class TestFullPipeline:
         analytics.revenue_summary.
         """
         # --- Stage 1: Initial state ---
-        {m.name: m for m in loaded_models}
-        build_dag(loaded_models)
+        models_dict = {m.name: m for m in loaded_models}
+        dag = build_dag(loaded_models)
         base_snapshot = _build_snapshot(loaded_models, "snap-base")
         base_hashes = _snapshot_to_hash_map(base_snapshot)
 
@@ -1049,7 +1056,7 @@ WHERE event_id IS NOT NULL
 
         # --- Stage 7: Execute plan steps in topological order via LocalExecutor ---
         run_records: list[RunRecord] = []
-        {s.model: s for s in plan.steps}
+        step_by_model = {s.model: s for s in plan.steps}
 
         # Build simple SQL for each model that DuckDB can execute
         model_sql = {

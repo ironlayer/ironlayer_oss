@@ -14,12 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import update
 
 from api.dependencies import SessionDep, SettingsDep, TenantDep, UserDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.schemas import PlanApprovalResponse
 from api.services.audit_service import AuditAction, AuditService
-from api.services.plan_service import invalidate_plan_cache
-from api.services.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +85,7 @@ async def approve_plan(
     repo = PlanRepository(session, tenant_id=tenant_id)
     plan_row = await repo.get_plan(plan_id)
     if plan_row is None:
-        raise not_found_404("Plan", plan_id)
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
 
     # Check for duplicate approval by the same authenticated user.
     existing: list[dict[str, str]] = json.loads(plan_row.approvals_json) if plan_row.approvals_json else []  # type: ignore[arg-type]
@@ -116,9 +113,6 @@ async def approve_plan(
     )
 
     logger.info("Plan %s approved by authenticated user %s", plan_id[:12], user_identity)
-
-    # BL-094: Invalidate the plan cache so the next GET reads fresh data.
-    await invalidate_plan_cache(await get_redis_client(), tenant_id, plan_id)
 
     # Reload the plan to return updated state.
     plan_row = await repo.get_plan(plan_id)
@@ -158,7 +152,7 @@ async def reject_plan(
     repo = PlanRepository(session, tenant_id=tenant_id)
     plan_row = await repo.get_plan(plan_id)
     if plan_row is None:
-        raise not_found_404("Plan", plan_id)
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
 
     # Build the rejection record using the authenticated identity.
     approvals: list[dict[str, Any]] = json.loads(plan_row.approvals_json) if plan_row.approvals_json else []  # type: ignore[arg-type]
@@ -193,9 +187,6 @@ async def reject_plan(
     )
 
     logger.info("Plan %s rejected by authenticated user %s: %s", plan_id[:12], user_identity, body.reason)
-
-    # BL-094: Invalidate the plan cache so the next GET reads fresh data.
-    await invalidate_plan_cache(await get_redis_client(), tenant_id, plan_id)
 
     # Return updated plan.
     plan_row = await repo.get_plan(plan_id)

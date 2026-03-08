@@ -164,12 +164,10 @@ class TestMetricsEndpoint:
         """GET /metrics returns 200 with Prometheus content."""
         from httpx import ASGITransport, AsyncClient
 
-        from unittest.mock import AsyncMock, MagicMock
-
-        from api.config import APISettings
         from api.dependencies import get_metering_collector, get_settings
+        from api.config import APISettings
         from api.main import create_app
-        from api.test_utils import set_app_state_for_test
+        from unittest.mock import MagicMock
 
         app = create_app()
 
@@ -189,16 +187,6 @@ class TestMetricsEndpoint:
         mock_metering.record = MagicMock()
         mock_metering.flush = MagicMock(return_value=0)
         mock_metering.pending_count = 0
-
-        mock_session = AsyncMock()
-        mock_ai = AsyncMock()
-        set_app_state_for_test(
-            app,
-            settings=settings,
-            session=mock_session,
-            ai_client=mock_ai,
-            metering=mock_metering,
-        )
 
         app.dependency_overrides[get_settings] = lambda: settings
         app.dependency_overrides[get_metering_collector] = lambda: mock_metering

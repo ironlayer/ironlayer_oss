@@ -7,9 +7,11 @@ stay concise and self-contained.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, PropertyMock
 
 import pytest
+
 from ai_engine.engines.llm_client import LLMClient
 from ai_engine.models.requests import (
     CostPredictRequest,

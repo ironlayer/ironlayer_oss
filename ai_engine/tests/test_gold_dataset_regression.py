@@ -11,8 +11,10 @@ unit test runs via ``pytest -m "not slow"``.
 from __future__ import annotations
 
 import pytest
-from ai_engine.evaluation.gold_dataset import GoldDataset
+
+from ai_engine.evaluation.gold_dataset import GoldDataset, GoldDatasetEntry
 from ai_engine.evaluation.harness import EvaluationHarness, EvaluationReport
+from ai_engine.evaluation.metrics import accuracy, precision_recall_f1
 
 # ---------------------------------------------------------------------------
 # Engine instantiation (rule-based, no LLM, fully deterministic)
@@ -33,9 +35,9 @@ def _build_engines() -> tuple:
 
     Returns (classifier, cost_predictor, risk_scorer, optimizer).
     """
+    from ai_engine.engines.semantic_classifier import SemanticClassifier
     from ai_engine.engines.cost_predictor import CostPredictor
     from ai_engine.engines.risk_scorer import RiskScorer
-    from ai_engine.engines.semantic_classifier import SemanticClassifier
     from ai_engine.engines.sql_optimizer import SQLOptimizer
 
     classifier = SemanticClassifier(llm_client=None)
@@ -61,7 +63,7 @@ class TestGoldDatasetIntegrity:
     def test_all_entries_have_required_fields(self) -> None:
         ds = GoldDataset()
         for entry in ds.get_all():
-            assert entry.id, "Entry missing id"
+            assert entry.id, f"Entry missing id"
             assert entry.category, f"Entry {entry.id} missing category"
             assert entry.new_sql, f"Entry {entry.id} missing new_sql"
             assert entry.expected_change_type in _CHANGE_TYPE_LABELS, (
@@ -130,51 +132,51 @@ class TestClassifierRegression:
         )
         self.dataset = GoldDataset()
 
-    async def test_full_evaluation_produces_report(self) -> None:
+    def test_full_evaluation_produces_report(self) -> None:
         """The harness should run to completion and produce a structured report."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         assert isinstance(report, EvaluationReport)
         assert report.entries_evaluated >= 50
 
-    async def test_classifier_accuracy_above_threshold(self) -> None:
+    def test_classifier_accuracy_above_threshold(self) -> None:
         """Rule-based classifier must achieve at least 60% accuracy.
 
         Note: The rule-based classifier without LLM enrichment may not reach
         the full 85% F1 target. This gate catches severe regressions.
         """
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         assert report.classifier_accuracy >= 0.60, (
             f"Classifier accuracy {report.classifier_accuracy:.4f} < 0.60 threshold"
         )
 
-    async def test_no_cost_predictor_crashes(self) -> None:
+    def test_no_cost_predictor_crashes(self) -> None:
         """Cost predictor should not crash on any gold dataset entry."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         error_rate = report.cost_metrics.get("error_rate", 1.0)
         assert error_rate < 0.10, f"Cost predictor error rate {error_rate:.4f} >= 0.10 (too many crashes)"
 
-    async def test_per_category_has_results(self) -> None:
+    def test_per_category_has_results(self) -> None:
         """Every major category should appear in the breakdown."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         for cat in ["cosmetic", "breaking", "non_breaking"]:
             assert cat in report.per_category_breakdown, f"Category '{cat}' missing from breakdown"
             assert report.per_category_breakdown[cat]["total"] > 0
 
-    async def test_cosmetic_accuracy_high(self) -> None:
+    def test_cosmetic_accuracy_high(self) -> None:
         """Cosmetic changes (whitespace/comments) should be easy for the classifier."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         cosmetic = report.per_category_breakdown.get("cosmetic", {})
         assert cosmetic.get("accuracy", 0.0) >= 0.80, f"Cosmetic accuracy {cosmetic.get('accuracy', 0):.4f} < 0.80"
 
-    async def test_breaking_detection_above_minimum(self) -> None:
+    def test_breaking_detection_above_minimum(self) -> None:
         """Breaking changes should be detected at a reasonable rate."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         breaking = report.per_category_breakdown.get("breaking", {})
         assert breaking.get("accuracy", 0.0) >= 0.40, f"Breaking detection {breaking.get('accuracy', 0):.4f} < 0.40"
 
-    async def test_report_failures_include_debugging_info(self) -> None:
+    def test_report_failures_include_debugging_info(self) -> None:
         """Individual failures should contain enough info for debugging."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         for failure in report.individual_failures:
             assert "entry_id" in failure
             assert "category" in failure
@@ -197,9 +199,9 @@ class TestVersionComparisonRegression:
         )
         self.dataset = GoldDataset()
 
-    async def test_same_version_zero_delta(self) -> None:
+    def test_same_version_zero_delta(self) -> None:
         """Running the same engines twice should produce zero deltas."""
-        report = await self.harness.run_full_evaluation(self.dataset)
+        report = self.harness.run_full_evaluation(self.dataset)
         delta = EvaluationHarness.compare_versions(report, report)
 
         assert delta["classifier_accuracy_delta"] == 0.0

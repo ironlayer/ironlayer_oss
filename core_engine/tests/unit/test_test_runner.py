@@ -10,11 +10,13 @@ Covers:
 from __future__ import annotations
 
 import pytest
+
 from core_engine.models.model_definition import (
     ModelTestDefinition,
     ModelTestType,
+    TestSeverity,
 )
-from core_engine.testing.test_runner import ModelTestRunner
+from core_engine.testing.test_runner import ModelTestRunner, TestResult
 
 # ---------------------------------------------------------------------------
 # SQL generation tests

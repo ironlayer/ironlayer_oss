@@ -14,8 +14,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from core_engine.sql_toolkit import Dialect, get_sql_toolkit
-from core_engine.sql_toolkit import SqlParseError as ToolkitParseError
+from core_engine.sql_toolkit import Dialect, SqlParseError as ToolkitParseError, get_sql_toolkit
 
 logger = logging.getLogger(__name__)
 

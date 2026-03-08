@@ -12,7 +12,7 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,10 +26,8 @@ from httpx import ASGITransport, AsyncClient
 _TEST_JWT_SECRET = "test-secret-key-for-ironlayer-tests"
 os.environ.setdefault("JWT_SECRET", _TEST_JWT_SECRET)
 
-from pydantic import SecretStr  # noqa: E402
-
-from api.config import APISettings  # noqa: E402
-from api.dependencies import (  # noqa: E402
+from api.config import APISettings
+from api.dependencies import (
     get_admin_session,
     get_ai_client,
     get_db_session,
@@ -37,8 +35,8 @@ from api.dependencies import (  # noqa: E402
     get_settings,
     get_tenant_session,
 )
-from api.main import create_app  # noqa: E402
-from api.services.ai_client import AIServiceClient  # noqa: E402
+from api.main import create_app
+from api.services.ai_client import AIServiceClient
 
 # ---------------------------------------------------------------------------
 # Dev auth token (shared across all tests)
@@ -102,8 +100,6 @@ def test_settings() -> APISettings:
         ai_engine_timeout=5.0,
         platform_env="dev",
         cors_origins=["http://localhost:3000"],
-        allowed_repo_base="/",  # tests use /tmp/repo or similar; allow any absolute path
-        jwt_secret=SecretStr(_TEST_JWT_SECRET),
     )
 
 
@@ -189,9 +185,6 @@ def mock_ai_client() -> AsyncMock:
 # ---------------------------------------------------------------------------
 
 
-from api.test_utils import set_app_state_for_test  # noqa: E402
-
-
 @pytest.fixture()
 def app(test_settings: APISettings, mock_session: AsyncMock, mock_ai_client: AsyncMock):
     """Create a FastAPI app with dependency overrides for testing.
@@ -219,14 +212,6 @@ def app(test_settings: APISettings, mock_session: AsyncMock, mock_ai_client: Asy
 
     def _override_metering():
         return mock_metering
-
-    set_app_state_for_test(
-        application,
-        settings=test_settings,
-        session=mock_session,
-        ai_client=mock_ai_client,
-        metering=mock_metering,
-    )
 
     application.dependency_overrides[get_db_session] = _override_session
     application.dependency_overrides[get_tenant_session] = _override_session

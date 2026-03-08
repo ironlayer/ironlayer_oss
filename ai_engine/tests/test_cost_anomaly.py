@@ -7,6 +7,7 @@ insufficient data handling, and batch sorting.
 from __future__ import annotations
 
 import pytest
+
 from ai_engine.engines.cost_anomaly import AnomalyReport, CostAnomalyDetector
 
 # ---------------------------------------------------------------------------
@@ -197,7 +198,7 @@ class TestBatchDetection:
         }
         r1 = detector.detect_batch(models)
         r2 = detector.detect_batch(models)
-        for a, b in zip(r1, r2, strict=False):
+        for a, b in zip(r1, r2):
             assert a.model_name == b.model_name
             assert a.z_score == b.z_score
 

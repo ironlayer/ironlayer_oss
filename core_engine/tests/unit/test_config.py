@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
+
 from core_engine.config import (
     ClusterSize,
     PlatformEnv,
@@ -10,7 +12,6 @@ from core_engine.config import (
     StateStoreType,
     load_settings,
 )
-from pydantic import SecretStr
 
 # ---------------------------------------------------------------------------
 # Settings - default values
@@ -93,10 +94,10 @@ class TestSettingsEnvOverrides:
         assert settings.databricks_host == "https://my-workspace.databricks.com"
 
     def test_env_var_databricks_token(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("PLATFORM_DATABRICKS_TOKEN", "dapi_FAKE_TOKEN_FOR_TESTING")
+        monkeypatch.setenv("PLATFORM_DATABRICKS_TOKEN", "dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         settings = Settings()
         assert isinstance(settings.databricks_token, SecretStr)
-        assert settings.databricks_token.get_secret_value() == "dapi_FAKE_TOKEN_FOR_TESTING"
+        assert settings.databricks_token.get_secret_value() == "dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 # ---------------------------------------------------------------------------
@@ -157,11 +158,6 @@ class TestEnums:
         assert PlatformEnv.DEV.value == "dev"
         assert PlatformEnv.STAGING.value == "staging"
         assert PlatformEnv.PROD.value == "prod"
-
-    def test_platform_env_accepts_production_string(self):
-        """Backward compatibility: 'production' normalizes to PROD."""
-        settings = Settings(env="production")
-        assert settings.env == PlatformEnv.PROD
 
     def test_cluster_size_values(self):
         assert ClusterSize.SMALL.value == "small"

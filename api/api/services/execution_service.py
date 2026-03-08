@@ -109,7 +109,7 @@ class ExecutionService:
                     f"Current role '{caller_role.name if caller_role else 'UNKNOWN'}' is insufficient."
                 )
             # Additionally restrict auto_approve in production unless ADMIN.
-            if self._settings.platform_env == PlatformEnv.PROD and caller_role != Role.ADMIN:
+            if self._settings.platform_env == PlatformEnv.PRODUCTION and caller_role != Role.ADMIN:
                 raise PermissionError("auto_approve in production environment requires ADMIN role.")
 
         plan_row = await self._plan_repo.get_plan(plan_id)

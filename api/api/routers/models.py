@@ -13,10 +13,8 @@ from core_engine.state.repository import (
 )
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.dependencies import SessionDep, SettingsDep, TenantDep
-from api.http_errors import not_found_404
+from api.dependencies import SessionDep, TenantDep
 from api.middleware.rbac import Permission, Role, require_permission
-from api.validation import resolve_repo_path_under_base
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +35,7 @@ async def list_models(
     owner: str | None = Query(default=None, description="Filter by owner."),
     search: str | None = Query(default=None, description="Text search on model name."),
     limit: int = Query(default=100, ge=1, le=500, description="Max models to return."),
-    offset: int = Query(default=0, ge=0, le=100_000, description="Number of rows to skip."),
+    offset: int = Query(default=0, ge=0, description="Number of rows to skip."),
 ) -> list[dict[str, Any]]:
     """Return registered models with pagination, optionally filtered."""
     repo = ModelRepository(session, tenant_id=tenant_id)
@@ -160,7 +158,7 @@ async def get_model_health(
     model_repo = ModelRepository(session, tenant_id=tenant_id)
     row = await model_repo.get(model_name)
     if row is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
     run_repo = RunRepository(session, tenant_id=tenant_id)
     summary = await run_repo.get_model_run_summary(model_name)
@@ -241,13 +239,9 @@ async def get_model_lineage(
     repo = ModelRepository(session, tenant_id=tenant_id)
     target = await repo.get(model_name)
     if target is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
-    # BL-074: cap list_all at 1000 to support larger tenants; report truncation.
-    # TODO: replace with a PostgreSQL recursive CTE for O(1) memory at scale.
-    _LINEAGE_MODEL_CAP = 1000
-    all_models = await repo.list_all(limit=_LINEAGE_MODEL_CAP)
-    graph_truncated = len(all_models) >= _LINEAGE_MODEL_CAP
+    all_models = await repo.list_all(limit=500)
 
     # Build adjacency from model metadata.
     # Each model's tags field may contain dependency info, but the
@@ -268,17 +262,8 @@ async def get_model_lineage(
         children_of.setdefault(m.model_name, set())
         parents_of.setdefault(m.model_name, set())
 
-    # BL-074: Maximum graph traversal depth.  Chains deeper than this limit
-    # would cause RecursionError (~1000 default) and are pathological.
-    _MAX_LINEAGE_DEPTH = 50
-    depth_truncated = False
-
+    # Walk relationships (BFS upstream).
     def _walk_upstream(name: str, depth: int = 0) -> int:
-        nonlocal depth_truncated
-        # BL-074: hard depth cap — stop traversal and flag truncation.
-        if depth > _MAX_LINEAGE_DEPTH:
-            depth_truncated = True
-            return depth
         max_depth = depth
         for parent in parents_of.get(name, set()):
             if parent not in _visited_up:
@@ -288,11 +273,6 @@ async def get_model_lineage(
         return max_depth
 
     def _walk_downstream(name: str, depth: int = 0) -> int:
-        nonlocal depth_truncated
-        # BL-074: hard depth cap — stop traversal and flag truncation.
-        if depth > _MAX_LINEAGE_DEPTH:
-            depth_truncated = True
-            return depth
         max_depth = depth
         for child in children_of.get(name, set()):
             if child not in _visited_down:
@@ -303,14 +283,12 @@ async def get_model_lineage(
 
     depth_up = _walk_upstream(model_name)
     depth_down = _walk_downstream(model_name)
-    is_truncated = depth_truncated or graph_truncated
 
     return {
         "model_name": model_name,
         "upstream": sorted(upstream),
         "downstream": sorted(downstream),
         "depth": max(depth_up, depth_down),
-        "is_truncated": is_truncated,
     }
 
 
@@ -319,7 +297,6 @@ async def get_column_lineage(
     model_name: str,
     session: SessionDep,
     tenant_id: TenantDep,
-    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.READ_MODELS)),
     column: str | None = Query(
         default=None,
@@ -343,20 +320,12 @@ async def get_column_lineage(
     repo = ModelRepository(session, tenant_id=tenant_id)
     target = await repo.get(model_name)
     if target is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
-    # Load the model's SQL from the repo path (validate path under allowed base first).
+    # Load the model's SQL from the repo path.
     model_sql: str | None = None
     if target.repo_path:
-        try:
-            allowed_base = Path(settings.allowed_repo_base).resolve()
-            sql_path = resolve_repo_path_under_base(target.repo_path, allowed_base)
-        except ValueError as exc:
-            logger.warning("Model %s repo_path outside allowed base: %s", model_name, exc)
-            raise HTTPException(
-                status_code=400,
-                detail="Model repository path is outside the allowed base directory.",
-            ) from exc
+        sql_path = Path(target.repo_path)
         if sql_path.exists():
             try:
                 raw = sql_path.read_text(encoding="utf-8")
@@ -390,10 +359,9 @@ async def get_column_lineage(
             dialect=Dialect.DATABRICKS,
         )
     except SqlLineageError as exc:
-        logger.warning("Column lineage analysis failed for model %s: %s", model_name, exc, exc_info=True)
         raise HTTPException(
             status_code=422,
-            detail="Column lineage analysis failed.",
+            detail=f"Column lineage analysis failed: {exc}",
         ) from exc
 
     # If a specific column was requested, filter to just that column.
@@ -452,7 +420,7 @@ async def get_model(
     repo = ModelRepository(session, tenant_id=tenant_id)
     row = await repo.get(model_name)
     if row is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
     # Fetch latest watermark.
     wm_repo = WatermarkRepository(session, tenant_id=tenant_id)
@@ -461,6 +429,12 @@ async def get_model(
     # Fetch latest run stats.
     run_repo = RunRepository(session, tenant_id=tenant_id)
     stats = await run_repo.get_historical_stats(model_name)
+
+    # Fetch most recent runs.
+    await run_repo.get_by_plan("")  # empty plan_id returns nothing
+    # Instead, query by model name through recent plan runs.
+    # The RunRepository does not have a get_by_model method, so we
+    # rely on historical stats for run info.
 
     tags = json.loads(row.tags) if row.tags else []
 

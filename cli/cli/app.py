@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
-from core_engine.config import PlatformEnv
 
 from cli.state import set_global_options
+from core_engine.config import PlatformEnv
 
 # ---------------------------------------------------------------------------
 # App & sub-apps
@@ -25,8 +25,8 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-from cli.commands.mcp import mcp_app
 from cli.commands.migrate import migrate_app
+from cli.commands.mcp import mcp_app
 
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(mcp_app, name="mcp")
@@ -37,13 +37,13 @@ app.add_typer(mcp_app, name="mcp")
 
 from cli.commands.apply import apply_command
 from cli.commands.auth import login_command, logout_command, whoami_command
+from cli.commands.check import check_command
 from cli.commands.backfill import (
     backfill_chunked_command,
     backfill_command,
     backfill_history_command,
     backfill_resume_command,
 )
-from cli.commands.check import check_command
 from cli.commands.dev import dev_command
 from cli.commands.init import init_command
 from cli.commands.lineage import lineage_command

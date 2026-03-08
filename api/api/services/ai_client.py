@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
-from typing import Any, cast
+from typing import Any
 
 import httpx
 
@@ -21,11 +20,7 @@ _PROMPT_INJECTION_PATTERNS = re.compile(
     r"Human:|Assistant:|"
     r"\[INST\]|\[/INST\]|"
     r"<<SYS>>|<</SYS>>|"
-    r"<\|im_start\|>|<\|im_end\|>|"
-    r"system\s*:|"
-    r"\n\s*ignore\s+previous|"
-    r"\n\s*forget\s+(previous|all|the\s+above)|"
-    r"[\u0400-\u04ff\u0370-\u03ff]",
+    r"<\|im_start\|>|<\|im_end\|>",
     re.IGNORECASE,
 )
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")  # Keep \n, \t, \r
@@ -122,57 +117,6 @@ def _sanitize_list(items: list[Any], parent_name: str = "list") -> list[Any]:
     return result
 
 
-class _CircuitBreaker:
-    """Per-instance half-open circuit breaker for the AI advisory engine.
-
-    Trips after ``fail_max`` consecutive *network-level* failures
-    (``httpx.RequestError`` — timeouts, connection refused, DNS failures).
-    HTTP error responses (4xx/5xx) do **not** trip the circuit because they
-    indicate the server is reachable and responding, not that it is down.
-
-    States
-    ------
-    closed    Normal operation; failures are counted.
-    open      All requests are rejected immediately (returns ``None``).
-              Transitions to ``half_open`` automatically after
-              ``reset_timeout`` seconds.
-    half_open Probe requests are allowed through (soft half-open; no
-              concurrency gate).  Success → closed; failure → open
-              (reset timeout restarts).
-    """
-
-    def __init__(self, fail_max: int = 5, reset_timeout: float = 30.0) -> None:
-        self._fail_max = fail_max
-        self._reset_timeout = reset_timeout
-        self._failures = 0
-        self._state = "closed"
-        self._opened_at = 0.0
-
-    @property
-    def state(self) -> str:
-        """Return the current state, auto-transitioning open → half_open."""
-        if self._state == "open":
-            if time.monotonic() - self._opened_at >= self._reset_timeout:
-                self._state = "half_open"
-        return self._state
-
-    def is_open(self) -> bool:
-        """Return ``True`` if the circuit is open (request should be rejected)."""
-        return self.state == "open"
-
-    def on_success(self) -> None:
-        """Record a successful or HTTP-level response (server is reachable)."""
-        self._failures = 0
-        self._state = "closed"
-
-    def on_failure(self) -> None:
-        """Record a network-level failure and possibly open the circuit."""
-        self._failures += 1
-        if self._state == "half_open" or self._failures >= self._fail_max:
-            self._state = "open"
-            self._opened_at = time.monotonic()
-
-
 class AIServiceClient:
     """Thin async wrapper around the AI engine REST API.
 
@@ -198,17 +142,8 @@ class AIServiceClient:
         base_url: str,
         timeout: float = 10.0,
         shared_secret: str | None = None,
-        *,
-        circuit_breaker_fail_max: int = 5,
-        circuit_breaker_reset_timeout: float = 30.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        _platform_env = os.environ.get("PLATFORM_ENV", "development")
-        if _platform_env != "development" and self._base_url.startswith("http://"):
-            raise ValueError(
-                f"AI engine URL uses insecure HTTP scheme in {_platform_env} environment: {self._base_url!r}. "
-                "Set AI_ENGINE_URL to an https:// URL for production deployments."
-            )
         self._shared_secret = shared_secret or os.environ.get("AI_ENGINE_SHARED_SECRET", "")
 
         default_headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -219,10 +154,6 @@ class AIServiceClient:
             base_url=self._base_url,
             timeout=httpx.Timeout(timeout),
             headers=default_headers,
-        )
-        self._circuit_breaker = _CircuitBreaker(
-            fail_max=circuit_breaker_fail_max,
-            reset_timeout=circuit_breaker_reset_timeout,
         )
 
     # -- Advisory endpoints --------------------------------------------------
@@ -370,20 +301,7 @@ class AIServiceClient:
 
         Automatically forwards the W3C ``traceparent`` header if a trace
         context is active, enabling distributed tracing across services.
-
-        The circuit breaker is checked before every request.  After
-        ``circuit_breaker_fail_max`` consecutive network failures the circuit
-        opens and all subsequent calls return ``None`` immediately without
-        waiting for the 10 s timeout.  The circuit resets automatically after
-        ``circuit_breaker_reset_timeout`` seconds.
         """
-        # Circuit breaker: reject immediately when open.
-        if self._circuit_breaker.is_open():
-            logger.warning(
-                "AI engine circuit breaker open — skipping request to %s", path
-            )
-            return None
-
         # Forward W3C traceparent for distributed tracing.
         extra_headers: dict[str, str] = {}
         try:
@@ -398,14 +316,8 @@ class AIServiceClient:
         try:
             response = await self._client.post(path, json=payload, headers=extra_headers if extra_headers else None)
             response.raise_for_status()
-            # Server responded — circuit is healthy regardless of status code.
-            self._circuit_breaker.on_success()
-            return cast(dict[str, Any], response.json())
+            return response.json()
         except httpx.HTTPStatusError as exc:
-            # HTTP errors (4xx/5xx) mean the server is responding — do NOT trip
-            # the circuit.  The server is reachable; the request was just invalid
-            # or the engine returned an error response.
-            self._circuit_breaker.on_success()
             logger.warning(
                 "AI engine returned %d for %s: %s",
                 exc.response.status_code,
@@ -414,9 +326,6 @@ class AIServiceClient:
             )
             return None
         except httpx.RequestError as exc:
-            # Network-level failures (timeout, connection refused, DNS) trip the
-            # circuit because they cause the full 10 s timeout to block.
-            self._circuit_breaker.on_failure()
             logger.warning(
                 "AI engine request to %s failed: %s",
                 path,

@@ -43,7 +43,6 @@ class AuditAction:
     MODEL_REGISTERED = "MODEL_REGISTERED"
     AUTH_SUCCESS = "AUTH_SUCCESS"
     AUTH_FAILURE = "AUTH_FAILURE"
-    AUTH_FAILED = "AUTH_FAILED"
     SQL_GUARD_VIOLATION = "SQL_GUARD_VIOLATION"
     TOKEN_REVOKED = "TOKEN_REVOKED"
     TENANT_PROVISIONED = "TENANT_PROVISIONED"
@@ -81,7 +80,6 @@ class AuditService:
         tenant_id: str,
         actor: str = "system",
     ) -> None:
-        self._session = session
         self._repo = AuditRepository(session, tenant_id=tenant_id)
         self._actor = actor
 
@@ -112,16 +110,11 @@ class AuditService:
     async def cleanup_old_logs(self, retention_days: int) -> int:
         """Purge audit log entries older than retention_days for this tenant."""
         deleted = await self._repo.cleanup_old_entries(retention_days)
-        await self._session.commit()
+        await self._repo._session.commit()
         return deleted
 
     async def anonymize_user_data(self, user_id: str) -> int:
-        """GDPR right-to-erasure: anonymize all audit entries for a specific user.
-
-        Sets ``actor`` to ``[REDACTED]``, clears ``metadata_json``, and marks
-        entries ``is_anonymized=True`` so :meth:`verify_chain` can distinguish
-        legitimate erasure from real hash-chain tampering.
-        """
+        """GDPR right-to-erasure: anonymize all audit entries for a specific user."""
         count = await self._repo.anonymize_user_entries(user_id)
-        await self._session.commit()
+        await self._repo._session.commit()
         return count

@@ -17,7 +17,7 @@ even if a quota boundary is crossed during execution.
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Any
 
 from core_engine.state.repository import (
     LLMUsageLogRepository,
@@ -150,7 +150,7 @@ class QuotaService:
         if config is not None:
             explicit = getattr(config, quota_field, None)
             if explicit is not None:
-                return cast(int, explicit)
+                return explicit
 
         # Fall back to tier default.
         tier = await self._get_plan_tier()

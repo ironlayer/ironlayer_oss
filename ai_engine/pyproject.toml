@@ -16,9 +16,6 @@ dependencies = [
     "sqlglot==25.34.1",  # Pinned: last MIT-licensed version before Fivetran acquisition risk
     "duckdb>=1.0,<2.0",
     "joblib>=1.3,<2.0",
-    "opentelemetry-sdk>=1.20,<2.0",
-    "opentelemetry-instrumentation-fastapi>=0.41b0",
-    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
 ]
 
 [project.optional-dependencies]
@@ -54,8 +51,3 @@ warn_return_any = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=ai_engine --cov-report=term-missing"
-markers = [
-    "slow: marks tests as slow — run full gold dataset against real engines (deselect with '-m \"not slow\"')",
-    "integration: marks tests requiring live external services",
-    "benchmark: marks performance benchmark tests",
-]

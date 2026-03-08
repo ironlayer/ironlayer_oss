@@ -38,7 +38,7 @@ async def query_audit_log(
     entity_id: str | None = Query(default=None, description="Filter by entity ID."),
     since: datetime | None = Query(default=None, description="Only entries after this timestamp."),
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0, le=100_000),
+    offset: int = Query(default=0, ge=0),
     _role: Role = Depends(require_permission(Permission.READ_AUDIT)),
     _gate: None = Depends(require_feature(Feature.AUDIT_LOG)),
 ) -> list[dict[str, Any]]:

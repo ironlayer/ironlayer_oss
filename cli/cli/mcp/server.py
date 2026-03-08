@@ -15,11 +15,10 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
-
-import typer
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +28,9 @@ def _ensure_mcp_installed() -> None:
     try:
         import mcp  # noqa: F401
     except ImportError:
-        import sys
-
-        print(
-            "The 'mcp' extra is required for MCP server support.\nInstall it with: pip install ironlayer[mcp]",
-            file=sys.stderr,
+        raise SystemExit(
+            "The 'mcp' extra is required for MCP server support.\nInstall it with: pip install ironlayer[mcp]"
         )
-        raise typer.Exit(code=1) from None
 
 
 def create_server() -> Any:
@@ -135,10 +130,11 @@ async def run_sse(host: str = "127.0.0.1", port: int = 3333) -> None:
     """
     _ensure_mcp_installed()
 
-    import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
+
+    import uvicorn
 
     server = create_server()
     sse_transport = SseServerTransport("/messages/")

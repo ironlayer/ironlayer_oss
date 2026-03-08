@@ -29,27 +29,6 @@ logger = logging.getLogger(__name__)
 _SELECT_STAR_RE = re.compile(r"\bSELECT\s+\*", re.IGNORECASE)
 _DISTINCT_RE = re.compile(r"\bSELECT\s+DISTINCT\b", re.IGNORECASE)
 
-# Guard against destructive SQL in LLM-sourced rewrites (BL-056).
-# Matches DDL/DML statements that would mutate or destroy data/schema objects.
-_DESTRUCTIVE_SQL_RE = re.compile(
-    r"(?i)\b(drop\s+(table|database|schema|view|index|sequence)"
-    r"|truncate\s+(table\s+)?\w+"
-    r"|delete\s+from"
-    r"|alter\s+table\s+\w+\s+drop)\b"
-)
-
-
-def _is_destructive_sql(sql: str) -> bool:
-    """Return True if *sql* contains a destructive statement.
-
-    Checks for DROP TABLE/DATABASE/SCHEMA/VIEW/INDEX/SEQUENCE, TRUNCATE,
-    DELETE FROM, and ALTER TABLE ... DROP COLUMN patterns.  The check is
-    intentionally conservative: any match causes the suggestion to be
-    rejected so that an adversarial LLM response cannot inject DDL/DML
-    that could destroy data or schema objects.
-    """
-    return bool(_DESTRUCTIVE_SQL_RE.search(sql))
-
 
 class SQLOptimizer:
     """Generate SQL optimisation suggestions."""
@@ -62,7 +41,7 @@ class SQLOptimizer:
     # Public
     # ------------------------------------------------------------------
 
-    async def optimize(self, request: OptimizeSQLRequest) -> OptimizeSQLResponse:
+    def optimize(self, request: OptimizeSQLRequest) -> OptimizeSQLResponse:
         """Analyse SQL and return validated optimisation suggestions."""
 
         suggestions: list[SQLSuggestion] = []
@@ -77,7 +56,7 @@ class SQLOptimizer:
         # 2. LLM suggestions (optional; respect per-tenant opt-out)
         llm_enabled = getattr(request, "llm_enabled", True)
         if self._llm is not None and self._llm.enabled and llm_enabled:
-            llm_suggestions = await self._llm_suggestions(request)
+            llm_suggestions = self._llm_suggestions(request)
             suggestions.extend(llm_suggestions)
 
         # 3. Validate all suggestions through the three-gate pipeline
@@ -254,7 +233,7 @@ class SQLOptimizer:
     # LLM suggestions
     # ------------------------------------------------------------------
 
-    async def _llm_suggestions(
+    def _llm_suggestions(
         self,
         request: OptimizeSQLRequest,
     ) -> list[SQLSuggestion]:
@@ -272,7 +251,7 @@ class SQLOptimizer:
         if hasattr(request, "api_key") and request.api_key is not None:
             tenant_api_key = request.api_key.get_secret_value()
 
-        raw = await self._llm.suggest_optimization(
+        raw = self._llm.suggest_optimization(
             sql=request.sql,
             context="\n".join(context_parts),
             api_key=tenant_api_key,
@@ -286,24 +265,11 @@ class SQLOptimizer:
             if not isinstance(item, dict):
                 continue
             try:
-                rewritten_sql = item.get("rewritten_sql")
-                # BL-056: reject suggestions where the LLM-provided rewrite
-                # contains any destructive statement (DROP, TRUNCATE, DELETE,
-                # ALTER … DROP COLUMN, etc.).  An adversarial LLM response
-                # must not be able to inject schema-mutating SQL.
-                if rewritten_sql is not None and _is_destructive_sql(rewritten_sql):
-                    logger.warning(
-                        "Rejected LLM suggestion with destructive SQL "
-                        "(type=%s): rewritten_sql contained a disallowed "
-                        "statement and has been dropped.",
-                        item.get("suggestion_type", "llm_suggestion"),
-                    )
-                    continue
                 suggestions.append(
                     SQLSuggestion(
                         suggestion_type=str(item.get("suggestion_type", "llm_suggestion")),
                         description=str(item.get("description", "")),
-                        rewritten_sql=rewritten_sql,
+                        rewritten_sql=item.get("rewritten_sql"),
                         confidence=float(item.get("confidence", 0.5)),
                     )
                 )

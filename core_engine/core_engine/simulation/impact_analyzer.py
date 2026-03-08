@@ -19,12 +19,13 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from core_engine.sql_toolkit import Dialect, get_sql_toolkit
+
 from core_engine.models.model_definition import (
     ColumnContract,
     ModelDefinition,
     SchemaContractMode,
 )
-from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 
 logger = logging.getLogger(__name__)
 

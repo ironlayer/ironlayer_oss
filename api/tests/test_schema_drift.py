@@ -12,6 +12,7 @@ All API test URLs use the /api/v1 prefix since routes are mounted there.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -380,12 +381,7 @@ async def test_upsert_schedule_invalid_cron(
     client: AsyncClient,
     mock_session: AsyncMock,
 ) -> None:
-    """Invalid cron expression is now caught at the Pydantic validation layer (422).
-
-    BL-073 added a field_validator on cron_expression that uses croniter to
-    reject invalid expressions before they reach the router handler.  FastAPI
-    therefore returns 422 Unprocessable Entity instead of the previous 400.
-    """
+    """Invalid cron expression returns 400."""
     resp = await client.put(
         "/api/v1/reconciliation/schedule",
         json={
@@ -395,9 +391,8 @@ async def test_upsert_schedule_invalid_cron(
         },
     )
 
-    assert resp.status_code == 422
-    errors = resp.json()["detail"]
-    assert any("cron" in str(e).lower() or "invalid" in str(e).lower() for e in errors)
+    assert resp.status_code == 400
+    assert "cron" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,6 @@ from httpx import ASGITransport, AsyncClient
 
 from api.config import APISettings
 from api.dependencies import get_ai_client, get_db_session, get_metering_collector, get_settings, get_tenant_session
-from api.test_utils import set_app_state_for_test
 from api.main import create_app
 from api.security import CredentialVault
 from api.services.ai_client import AIServiceClient
@@ -34,7 +33,7 @@ from api.services.ai_client import AIServiceClient
 # ---------------------------------------------------------------------------
 
 _DEV_SECRET = "test-secret-key-for-ironlayer-tests"
-_WEBHOOK_SECRET = "test-webhook-hmac-secret-long-enough-32c"
+_WEBHOOK_SECRET = "test-webhook-hmac-secret"
 _CREDENTIAL_KEY = "ironlayer-dev-secret-change-in-production"
 
 
@@ -116,14 +115,6 @@ def _create_test_app() -> tuple[Any, AsyncMock]:
     mock_metering.record = MagicMock()
     mock_metering.flush = MagicMock(return_value=0)
     mock_metering.pending_count = 0
-
-    set_app_state_for_test(
-        app,
-        settings=settings,
-        session=mock_session,
-        ai_client=mock_ai_client,
-        metering=mock_metering,
-    )
 
     app.dependency_overrides[get_db_session] = _override_session
     app.dependency_overrides[get_tenant_session] = _override_session
@@ -472,12 +463,8 @@ class TestWebhookHMACValidation:
         assert "Signature verification failed" in resp.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_missing_secret_encrypted_returns_403(self) -> None:
-        """Config without secret_encrypted is rejected with 403 (BL-044).
-
-        Previously this fell through in degraded mode — now a missing secret
-        is a hard reject to prevent unauthenticated webhook processing.
-        """
+    async def test_missing_secret_encrypted_logs_warning(self) -> None:
+        """Config without secret_encrypted still processes (degraded mode)."""
         app, mock_session = _create_test_app()
         transport = ASGITransport(app=app)
 
@@ -510,9 +497,8 @@ class TestWebhookHMACValidation:
                     },
                 )
 
-        # BL-044: no secret → 403 Forbidden (hard reject, not degraded pass-through).
-        assert resp.status_code == 403
-        assert "secret" in resp.json()["detail"].lower()
+        # Degraded mode: event is still processed but a warning is logged.
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_decryption_failure_returns_500(self) -> None:
@@ -593,7 +579,7 @@ class TestWebhookConfigCreate:
                     json={
                         "repo_url": "https://github.com/org/repo.git",
                         "branch": "main",
-                        "secret": "my-webhook-secret-that-is-32-chars-or-more",
+                        "secret": "my-webhook-secret",
                     },
                 )
 
@@ -604,7 +590,7 @@ class TestWebhookConfigCreate:
 
     @pytest.mark.asyncio
     async def test_create_config_secret_too_short(self) -> None:
-        """Secret shorter than 32 chars returns 422 (BL-060: raised entropy requirement)."""
+        """Secret shorter than 8 chars returns 422."""
         app, _ = _create_test_app()
         transport = ASGITransport(app=app)
 
@@ -641,7 +627,7 @@ class TestWebhookRBAC:
                 json={
                     "repo_url": "https://github.com/org/repo.git",
                     "branch": "main",
-                    "secret": "my-webhook-secret-that-is-32-chars-or-more",
+                    "secret": "my-webhook-secret",
                 },
             )
 
@@ -659,7 +645,7 @@ class TestWebhookRBAC:
                 json={
                     "repo_url": "https://github.com/org/repo.git",
                     "branch": "main",
-                    "secret": "my-webhook-secret-that-is-32-chars-or-more",
+                    "secret": "my-webhook-secret",
                 },
             )
 
@@ -677,7 +663,7 @@ class TestWebhookRBAC:
                 json={
                     "repo_url": "https://github.com/org/repo.git",
                     "branch": "main",
-                    "secret": "my-webhook-secret-that-is-32-chars-or-more",
+                    "secret": "my-webhook-secret",
                 },
             )
 

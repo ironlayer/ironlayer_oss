@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from api.services.ai_feedback_service import (
     AIFeedbackService,

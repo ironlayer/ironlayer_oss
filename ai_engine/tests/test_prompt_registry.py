@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from ai_engine.engines.prompts import (
     PROMPT_REGISTRY,
     PromptTemplate,

@@ -7,6 +7,7 @@ confidence intervals, edge cases, and aggregate forecasting.
 from __future__ import annotations
 
 import pytest
+
 from ai_engine.engines.cost_forecaster import CostForecast, CostForecaster
 
 # ---------------------------------------------------------------------------
@@ -62,7 +63,7 @@ class TestIncreasingCosts:
         history = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
         result = forecaster.forecast("model_inc", history, runs_per_day=1.0)
         # Projection should be at least the mean * 7.
-        sum(history) / len(history)
+        mean = sum(history) / len(history)
         assert result.projected_7d_total > 0
 
 

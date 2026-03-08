@@ -58,7 +58,7 @@ async def semantic_classify(
             return cached
 
     logger.info("Classifying change (old_sql length=%d, new_sql length=%d)", len(request.old_sql), len(request.new_sql))
-    result = await classifier.classify(request)
+    result = classifier.classify(request)
 
     # Store in cache
     if _cache is not None:

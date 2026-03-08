@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
+
+_GIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{4,40}$")
 
 from core_engine.contracts.schema_validator import (
     ContractValidationResult,
@@ -43,32 +45,6 @@ from api.services.ai_client import AIServiceClient
 
 logger = logging.getLogger(__name__)
 
-# BL-094: Redis cache TTL for plan JSON (5 minutes).
-PLAN_CACHE_TTL = 300
-
-_GIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{4,40}$")
-
-
-def _plan_cache_key_for(tenant_id: str, plan_id: str) -> str:
-    """Canonical cache key for a plan — single source of truth."""
-    return f"plan:{tenant_id}:{plan_id}"
-
-
-async def invalidate_plan_cache(redis: Any, tenant_id: str, plan_id: str) -> None:
-    """Evict a single plan from the Redis cache (standalone helper).
-
-    This is the canonical invalidation function — use it from any module
-    (e.g. approval/rejection routers) instead of hard-coding the key format.
-    Fail-open: Redis errors are swallowed.
-    """
-    if redis is None:
-        return
-    try:
-        await redis.delete(_plan_cache_key_for(tenant_id, plan_id))
-        logger.debug("Plan cache INVALIDATED for %s (standalone)", plan_id[:12])
-    except Exception:
-        logger.debug("Plan cache DELETE failed (Redis unavailable)", exc_info=True)
-
 
 class PlanService:
     """High-level service coordinating plan lifecycle operations.
@@ -91,14 +67,12 @@ class PlanService:
         *,
         tenant_id: str = "default",
         metering: MeteringCollector | None = None,
-        redis: Any | None = None,
     ) -> None:
         self._session = session
         self._ai = ai_client
         self._settings = settings
         self._tenant_id = tenant_id
         self._metering = metering
-        self._redis = redis  # BL-094: optional Redis client for plan caching
         self._plan_repo = PlanRepository(session, tenant_id=tenant_id)
         self._model_repo = ModelRepository(session, tenant_id=tenant_id)
         self._watermark_repo = WatermarkRepository(session, tenant_id=tenant_id)
@@ -130,10 +104,14 @@ class PlanService:
         9. Persist the plan.
         10. Return the plan as a dictionary.
         """
-        from api.validation import resolve_repo_path_under_base
+        repo = Path(repo_path).resolve()
 
+        # Defense-in-depth: validate repo_path is under the allowed base.
+        # Uses is_relative_to() instead of string prefix to prevent bypass
+        # via paths like /workspace2/evil when base is /workspace.
         allowed_base = Path(self._settings.allowed_repo_base).resolve()
-        repo = resolve_repo_path_under_base(repo_path, allowed_base)
+        if not repo.is_relative_to(allowed_base):
+            raise ValueError(f"Repository path {repo} is outside the allowed base directory {allowed_base}")
 
         if not (repo / ".git").is_dir():
             raise ValueError(f"Not a valid git repository: {repo_path}")
@@ -162,24 +140,25 @@ class PlanService:
         dag = build_dag(model_list)
 
         # Identify changed SQL files between base and target ----------------
-        changed_files = await self._git_changed_files(repo, base_sha, target_sha)
+        changed_files = self._git_changed_files(repo, base_sha, target_sha)
 
         # Build content-hash snapshots at base and target -------------------
-        base_versions = await self._build_version_map(repo, base_sha, changed_files)
+        base_versions = self._build_version_map(repo, base_sha, changed_files)
         target_versions: dict[str, str] = {m.name: m.content_hash for m in model_list}
 
         # Structural diff ---------------------------------------------------
         diff_result: DiffResult = compute_structural_diff(base_versions, target_versions)
 
-        # Watermarks and historical stats — fetched in batch to avoid N+1 ----
-        model_name_list = list(models_by_name.keys())
-        watermarks: dict[str, tuple[Any, Any]] = await self._watermark_repo.get_watermarks_batch(
-            model_name_list
-        )
-        batch_stats = await self._run_repo.get_historical_stats_batch(model_name_list)
-        run_stats: dict[str, dict[str, Any]] = {
-            name: stats for name, stats in batch_stats.items() if stats["run_count"] > 0
-        }
+        # Watermarks and historical stats -----------------------------------
+        watermarks: dict[str, tuple[Any, Any]] = {}
+        run_stats: dict[str, dict[str, Any]] = {}
+        for name in models_by_name:
+            wm = await self._watermark_repo.get_watermark(name)
+            if wm is not None:
+                watermarks[name] = wm
+            stats = await self._run_repo.get_historical_stats(name)
+            if stats["run_count"] > 0:
+                run_stats[name] = stats
 
         # Run schema contract validation for models with active contracts ---
         models_with_contracts = [m for m in model_list if m.contract_mode != SchemaContractMode.DISABLED]
@@ -209,28 +188,14 @@ class PlanService:
 
         # Persist ------------------------------------------------------------
         plan_json_str = plan.model_dump_json(indent=2)
-        saved_row = await self._plan_repo.save_plan(
+        await self._plan_repo.save_plan(
             plan_id=plan.plan_id,
             base_sha=base_sha,
             target_sha=target_sha,
             plan_json=plan_json_str,
         )
 
-        # BL-094: Pre-warm the read cache so the first GET is a cache hit.
-        # The cached shape must match what get_plan() builds from a DB row
-        # (including created_at) so callers see a consistent dict regardless
-        # of whether the response came from cache or DB.
-        # save_plan() returns the flushed PlanTable row, so created_at is
-        # already populated by the DB default — no re-fetch needed.
-        plan_dict = plan.model_dump()
-        plan_dict.setdefault("approvals", [])
-        plan_dict.setdefault("auto_approved", False)
-        plan_dict["created_at"] = (
-            saved_row.created_at.isoformat() if saved_row.created_at else None
-        )
-        await self._cache_set(plan.plan_id, plan_dict)
-
-        return plan_dict
+        return plan.model_dump()
 
     # ------------------------------------------------------------------
     # AI augmentation
@@ -272,13 +237,6 @@ class PlanService:
         advisory: dict[str, Any] = {}
 
         steps = plan_data.get("steps", [])
-        step_model_names = [step.get("model", "") for step in steps if step.get("model", "")]
-
-        # Pre-load all per-model DB data in batch before entering the step loop.
-        batch_stats = await self._run_repo.get_historical_stats_batch(step_model_names)
-        batch_failure_rates = await self._run_repo.get_failure_rates_batch(step_model_names)
-        batch_models = await self._model_repo.get_models_batch(step_model_names)
-
         for step in steps:
             model_name = step.get("model", "")
             if not model_name:
@@ -303,8 +261,8 @@ class PlanService:
                         metadata={"call_type": "semantic_classify", "model": model_name},
                     )
 
-            # Cost prediction — use pre-loaded batch stats -------------------
-            stats = batch_stats.get(model_name, {"avg_runtime_seconds": None, "avg_cost_usd": None, "run_count": 0})
+            # Cost prediction ------------------------------------------------
+            stats = await self._run_repo.get_historical_stats(model_name)
             avg_runtime = stats.get("avg_runtime_seconds")
             cost_pred = await self._ai.predict_cost(
                 model_name=model_name,
@@ -324,10 +282,12 @@ class PlanService:
                         metadata={"call_type": "predict_cost", "model": model_name},
                     )
 
-            # Risk scoring — use pre-loaded batch model/failure data ---------
-            model_row = batch_models.get(model_name)
+            # Risk scoring ---------------------------------------------------
+            model_row = await self._model_repo.get(model_name)
             tags: list[str] = json.loads(model_row.tags) if model_row and model_row.tags else []
-            failure_rate = batch_failure_rates.get(model_name, 0.0)
+            total_runs = await self._run_repo.count_for_model(model_name)
+            failed_runs = await self._run_repo.count_by_status(model_name, "FAILED")
+            failure_rate = 0.0 if total_runs == 0 else failed_runs / total_runs
 
             risk = await self._ai.score_risk(
                 model_name=model_name,
@@ -352,74 +312,14 @@ class PlanService:
                 advisory[model_name] = model_advisory
 
         plan_data["advisory"] = advisory if advisory else None
-
-        # Ensure the response shape matches get_plan() — include DB-managed
-        # fields so callers get a consistent dict regardless of endpoint.
-        plan_data.setdefault(
-            "approvals",
-            json.loads(plan_row.approvals_json) if plan_row.approvals_json else [],  # type: ignore[arg-type]
-        )
-        plan_data.setdefault("auto_approved", plan_row.auto_approved)
-        plan_data.setdefault(
-            "created_at",
-            plan_row.created_at.isoformat() if plan_row.created_at else None,
-        )
         return plan_data
 
     # ------------------------------------------------------------------
     # Read operations
     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # BL-094: Redis cache helpers (fail-open)
-    # ------------------------------------------------------------------
-
-    def _plan_cache_key(self, plan_id: str) -> str:
-        """Return the Redis key for a plan, scoped to the tenant."""
-        return _plan_cache_key_for(self._tenant_id, plan_id)
-
-    async def _cache_get(self, plan_id: str) -> dict[str, Any] | None:
-        """Try to load plan data from Redis; return None on miss or error."""
-        if self._redis is None:
-            return None
-        try:
-            raw = await self._redis.get(self._plan_cache_key(plan_id))
-            if raw is not None:
-                logger.debug("Plan cache HIT for %s", plan_id[:12])
-                return cast(dict[str, Any], json.loads(raw))
-        except Exception:
-            logger.debug("Plan cache GET failed (Redis unavailable) — falling back to DB", exc_info=True)
-        return None
-
-    async def _cache_set(self, plan_id: str, data: dict[str, Any]) -> None:
-        """Persist plan data to Redis with the configured TTL; fail-open."""
-        if self._redis is None:
-            return
-        try:
-            await self._redis.setex(self._plan_cache_key(plan_id), PLAN_CACHE_TTL, json.dumps(data))
-            logger.debug("Plan cache SET for %s (TTL=%ds)", plan_id[:12], PLAN_CACHE_TTL)
-        except Exception:
-            logger.debug("Plan cache SET failed (Redis unavailable) — continuing without cache", exc_info=True)
-
-    async def invalidate_plan(self, plan_id: str) -> None:
-        """Evict a plan from the Redis cache (BL-094: called after mutations)."""
-        if self._redis is None:
-            return
-        try:
-            await self._redis.delete(self._plan_cache_key(plan_id))
-            logger.debug("Plan cache INVALIDATED for %s", plan_id[:12])
-        except Exception:
-            logger.debug("Plan cache DELETE failed (Redis unavailable)", exc_info=True)
-
     async def get_plan(self, plan_id: str) -> dict[str, Any] | None:
-        """Load a single plan by ID.
-
-        BL-094: checks Redis cache first (5-minute TTL); falls back to the
-        database on cache miss, Redis error, or when Redis is not configured.
-        """
-        cached = await self._cache_get(plan_id)
-        if cached is not None:
-            return cached
+        """Load a single plan by ID."""
         row = await self._plan_repo.get_plan(plan_id)
         if row is None:
             return None
@@ -427,13 +327,13 @@ class PlanService:
         data["approvals"] = json.loads(row.approvals_json) if row.approvals_json else []  # type: ignore[arg-type]
         data["auto_approved"] = row.auto_approved
         data["created_at"] = row.created_at.isoformat() if row.created_at else None
-        result = cast(dict[str, Any], data)
-        await self._cache_set(plan_id, result)
-        return result
+        return data
 
     async def list_plans(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
         """Return a paginated list of plan summaries."""
-        rows = await self._plan_repo.list_recent(limit=limit, offset=offset)
+        rows = await self._plan_repo.list_recent(limit=limit + offset)
+        # Apply manual offset since the repository only supports limit.
+        rows = rows[offset : offset + limit]
         summaries: list[dict[str, Any]] = []
         for row in rows:
             plan_data = json.loads(row.plan_json)  # type: ignore[arg-type]
@@ -495,25 +395,26 @@ class PlanService:
         raise ValueError(f"Cannot locate a models directory in {repo}. Looked in: {[str(c) for c in candidates]}")
 
     @staticmethod
-    async def _git_changed_files(repo: Path, base_sha: str, target_sha: str) -> list[str]:
+    def _git_changed_files(repo: Path, base_sha: str, target_sha: str) -> list[str]:
         """Return a list of file paths changed between two git commits."""
         for label, sha in [("base_sha", base_sha), ("target_sha", target_sha)]:
             if not _GIT_SHA_PATTERN.fullmatch(sha):
                 raise ValueError(f"Invalid git SHA for {label}: must be 4-40 hex characters, got '{sha[:80]}'")
 
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--name-only", base_sha, target_sha,
+        result = subprocess.run(
+            ["git", "diff", "--name-only", base_sha, target_sha],
             cwd=str(repo),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-        if proc.returncode != 0:
-            raise RuntimeError(f"git diff failed (exit {proc.returncode}): {stderr.decode().strip()}")
-        return [line.strip() for line in stdout.decode().splitlines() if line.strip()]
+        if result.returncode != 0:
+            raise RuntimeError(f"git diff failed (exit {result.returncode}): {result.stderr.strip()}")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     @staticmethod
-    async def _build_version_map(repo: Path, commit_sha: str, changed_files: list[str]) -> dict[str, str]:
+    def _build_version_map(repo: Path, commit_sha: str, changed_files: list[str]) -> dict[str, str]:
         """Build a model-name -> content-hash map at a given commit.
 
         Only models whose files appear in *changed_files* are included,
@@ -524,17 +425,18 @@ class PlanService:
         for file_path in changed_files:
             if not file_path.endswith(".sql"):
                 continue
-            proc = await asyncio.create_subprocess_exec(
-                "git", "show", f"{commit_sha}:{file_path}",
+            result = subprocess.run(
+                ["git", "show", f"{commit_sha}:{file_path}"],
                 cwd=str(repo),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
             )
-            stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-            if proc.returncode != 0:
+            if result.returncode != 0:
                 # File did not exist at that commit (new file).
                 continue
-            sql_content = stdout.decode()
+            sql_content = result.stdout
             try:
                 import hashlib
 

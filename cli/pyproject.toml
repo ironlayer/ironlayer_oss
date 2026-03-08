@@ -28,8 +28,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Secure credential storage via OS keychain — install with: pip install ironlayer[keyring]
-keyring = ["keyring>=25.0,<26.0"]
 # MCP support — install with: pip install ironlayer[mcp]
 mcp = ["mcp>=1.0,<2.0", "starlette>=0.27,<1.0", "uvicorn>=0.27,<1.0"]
 
@@ -70,7 +68,4 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Safety net: add workspace packages to sys.path so tests work even when
-# the venv .pth files are stale or missing (e.g. after a repo move).
-pythonpath = [".", "../core_engine", "../api"]
 addopts = "--cov=cli --cov-report=term-missing"

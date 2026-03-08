@@ -19,10 +19,9 @@ from typing import Any
 from core_engine.state.repository import TokenRevocationRepository
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field
 
-from api.dependencies import PublicSessionDep, SessionDep, SettingsDep, TenantDep, UserDep
-from api.http_errors import not_found_404
+from api.dependencies import PublicSessionDep, SessionDep, TenantDep, UserDep
 from api.middleware.login_rate_limiter import LoginRateLimiter
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.audit_service import AuditAction, AuditService
@@ -39,12 +38,8 @@ _REFRESH_COOKIE_KEY = "refresh_token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600  # 7 days
 _REFRESH_COOKIE_PATH = "/api/v1/auth"  # Sent to refresh + session endpoints
 
-# Module-level login rate limiter instance.
-# Uses Redis when configured (via lifespan); falls back to in-memory otherwise.
+# Module-level login rate limiter instance (in-memory, single-replica).
 _login_limiter = LoginRateLimiter()
-
-# Generic message for public auth failures to avoid user enumeration.
-_AUTH_FAILURE_MESSAGE = "Invalid credentials or account disabled."
 
 
 def _get_client_ip(request: Request) -> str:
@@ -69,19 +64,6 @@ class SignupRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address.")
     password: str = Field(..., min_length=8, description="Password (min 8 characters).")
     display_name: str = Field(..., min_length=1, max_length=256, description="Display name.")
-
-    @field_validator("password")
-    @classmethod
-    def _check_password_complexity(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters.")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter.")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter.")
-        if not any(c.isdigit() or not c.isalnum() for c in v):
-            raise ValueError("Password must contain at least one digit or special character.")
-        return v
 
 
 class LoginRequest(BaseModel):
@@ -216,11 +198,7 @@ def _clear_refresh_cookie(response: JSONResponse) -> None:
     summary="Create a new account",
     status_code=201,
 )
-async def signup(
-    body: SignupRequest,
-    session: PublicSessionDep,
-    settings: SettingsDep,
-) -> JSONResponse:
+async def signup(body: SignupRequest, session: PublicSessionDep) -> JSONResponse:
     """Register a new user, auto-provision a tenant, and return tokens.
 
     The first user of a new tenant is assigned the ADMIN role.
@@ -229,7 +207,7 @@ async def signup(
     """
     from api.services.auth_service import AuthError, AuthService
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     try:
         result = await svc.signup(
             email=body.email,
@@ -237,8 +215,7 @@ async def signup(
             display_name=body.display_name,
         )
     except AuthError as exc:
-        logger.warning("Signup failed: %s", exc)
-        raise HTTPException(status_code=exc.status_code, detail=_AUTH_FAILURE_MESSAGE)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
     body_data = TokenResponse(
         access_token=result["access_token"],
@@ -255,12 +232,7 @@ async def signup(
     response_model=TokenResponse,
     summary="Log in with email and password",
 )
-async def login(
-    body: LoginRequest,
-    request: Request,
-    session: PublicSessionDep,
-    settings: SettingsDep,
-) -> JSONResponse:
+async def login(body: LoginRequest, request: Request, session: PublicSessionDep) -> JSONResponse:
     """Validate credentials and return an access token.
 
     Enforces brute-force protection: after 5 consecutive failures for the
@@ -274,7 +246,7 @@ async def login(
     client_ip = _get_client_ip(request)
 
     # Check rate limit BEFORE validating credentials.
-    allowed, retry_after = await _login_limiter.check_rate_limit(body.email, client_ip)
+    allowed, retry_after = _login_limiter.check_rate_limit(body.email, client_ip)
     if not allowed:
         raise HTTPException(
             status_code=429,
@@ -282,17 +254,16 @@ async def login(
             headers={"Retry-After": str(retry_after)},
         )
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     try:
         result = await svc.login(email=body.email, password=body.password)
     except AuthError as exc:
         # Record the failure for brute-force tracking.
-        await _login_limiter.record_failure(body.email, client_ip)
-        logger.warning("Login failed for %s: %s", body.email, exc)
-        raise HTTPException(status_code=exc.status_code, detail=_AUTH_FAILURE_MESSAGE)
+        _login_limiter.record_failure(body.email, client_ip)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
     # Successful login — reset the failure counter.
-    await _login_limiter.record_success(body.email, client_ip)
+    _login_limiter.record_success(body.email, client_ip)
 
     body_data = TokenResponse(
         access_token=result["access_token"],
@@ -309,11 +280,7 @@ async def login(
     response_model=RefreshResponse,
     summary="Refresh an access token",
 )
-async def refresh(
-    request: Request,
-    session: PublicSessionDep,
-    settings: SettingsDep,
-) -> JSONResponse:
+async def refresh(request: Request, session: PublicSessionDep) -> JSONResponse:
     """Exchange a refresh token (from HttpOnly cookie) for a new token pair.
 
     The new access token is returned in the JSON body.  The new refresh
@@ -323,20 +290,15 @@ async def refresh(
 
     refresh_token = request.cookies.get(_REFRESH_COOKIE_KEY)
     if not refresh_token:
-        raise HTTPException(
-            status_code=401,
-            detail="No refresh token cookie",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="No refresh token cookie")
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     try:
         result = await svc.refresh(refresh_token)
     except AuthError as exc:
         # On invalid/expired refresh token, clear the stale cookie.
-        logger.warning("Refresh failed: %s", exc)
         error_response = JSONResponse(
-            content={"detail": _AUTH_FAILURE_MESSAGE},
+            content={"detail": str(exc)},
             status_code=exc.status_code,
         )
         _clear_refresh_cookie(error_response)
@@ -358,11 +320,7 @@ async def refresh(
     response_model=SessionResponse,
     summary="Restore session from HttpOnly refresh cookie",
 )
-async def restore_session(
-    request: Request,
-    session: PublicSessionDep,
-    settings: SettingsDep,
-) -> JSONResponse:
+async def restore_session(request: Request, session: PublicSessionDep) -> JSONResponse:
     """Validate the refresh-token cookie and return user info + a fresh access token.
 
     Called by the frontend on page load to restore a session without
@@ -373,23 +331,17 @@ async def restore_session(
 
     refresh_token = request.cookies.get(_REFRESH_COOKIE_KEY)
     if not refresh_token:
-        raise HTTPException(
-            status_code=401,
-            detail="No refresh token cookie",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
 
     # Validate the refresh token and get a new token pair.
     try:
         refreshed = await svc.refresh(refresh_token)
     except AuthError as exc:
-        logger.warning("Session restore failed: %s", exc)
         error_response = JSONResponse(
-            content={"detail": _AUTH_FAILURE_MESSAGE},
+            content={"detail": str(exc)},
             status_code=exc.status_code,
-            headers={"WWW-Authenticate": "Bearer"},
         )
         _clear_refresh_cookie(error_response)
         return error_response
@@ -397,13 +349,9 @@ async def restore_session(
     # Decode the new access token to extract user/tenant info.
     tm = svc._tm
     try:
-        claims = await tm.validate_token_async(refreshed["access_token"])
-    except PermissionError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        claims = tm.validate_token(refreshed["access_token"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
 
     # Fetch full user profile.
     try:
@@ -412,8 +360,7 @@ async def restore_session(
             tenant_id=claims.tenant_id,
         )
     except AuthError as exc:
-        logger.warning("Session restore get_current_user failed: %s", exc)
-        raise HTTPException(status_code=exc.status_code, detail=_AUTH_FAILURE_MESSAGE)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
     body_data = SessionResponse(
         access_token=refreshed["access_token"],
@@ -464,17 +411,15 @@ async def get_me(
     session: SessionDep,
     tenant_id: TenantDep,
     user: UserDep,
-    settings: SettingsDep,
 ) -> UserProfileResponse:
     """Return the profile of the currently authenticated user."""
     from api.services.auth_service import AuthError, AuthService
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     try:
         profile = await svc.get_current_user(user_id=user, tenant_id=tenant_id)
     except AuthError as exc:
-        logger.warning("GET /auth/me failed for user=%s: %s", user, exc)
-        raise HTTPException(status_code=exc.status_code, detail=_AUTH_FAILURE_MESSAGE)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
     return UserProfileResponse(**profile)
 
@@ -495,7 +440,6 @@ async def create_api_key(
     session: SessionDep,
     tenant_id: TenantDep,
     user: UserDep,
-    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.MANAGE_SETTINGS)),
 ) -> APIKeyResponse:
     """Create a new API key.  The plaintext key is returned exactly once.
@@ -504,7 +448,7 @@ async def create_api_key(
     """
     from api.services.auth_service import AuthError, AuthService
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     try:
         result = await svc.create_api_key(
             user_id=user,
@@ -513,8 +457,7 @@ async def create_api_key(
             scopes=body.scopes,
         )
     except AuthError as exc:
-        logger.warning("API key creation failed for user=%s: %s", user, exc)
-        raise HTTPException(status_code=exc.status_code, detail=_AUTH_FAILURE_MESSAGE)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
     # Audit log the API key creation.
     audit = AuditService(session, tenant_id=tenant_id, actor=user)
@@ -537,7 +480,6 @@ async def list_api_keys(
     session: SessionDep,
     tenant_id: TenantDep,
     user: UserDep,
-    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.MANAGE_SETTINGS)),
 ) -> list[APIKeyResponse]:
     """List all non-revoked API keys for the current user.
@@ -546,7 +488,7 @@ async def list_api_keys(
     """
     from api.services.auth_service import AuthService
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     keys = await svc.list_api_keys(user_id=user, tenant_id=tenant_id)
     return [APIKeyResponse(**k) for k in keys]
 
@@ -561,7 +503,6 @@ async def revoke_api_key(
     session: SessionDep,
     tenant_id: TenantDep,
     user: UserDep,
-    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.MANAGE_SETTINGS)),
 ) -> dict[str, Any]:
     """Revoke an API key by its ID.
@@ -570,11 +511,11 @@ async def revoke_api_key(
     """
     from api.services.auth_service import AuthService
 
-    svc = AuthService(session, settings=settings)
+    svc = AuthService(session)
     revoked = await svc.revoke_api_key(key_id=key_id, tenant_id=tenant_id)
 
     if not revoked:
-        raise not_found_404("API key")
+        raise HTTPException(status_code=404, detail="API key not found or already revoked.")
 
     # Audit log the revocation.
     audit = AuditService(session, tenant_id=tenant_id, actor=user)

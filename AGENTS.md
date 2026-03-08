@@ -17,9 +17,8 @@ Individual repos have extended AGENTS.md files with repo-specific details.
 See `ironlayer_infra/CLAUDE.md` for the full rule set (dependency verification,
 no-stubs rule, verification suite requirements, lessons learned update policy).
 
-This repo (`ironlayer_OSS`) is public (Apache 2.0) — no infra secrets, no
-internal URLs, no private tokens. All changes tracked in the private backlog
-before any code is written here.
+OSS repo work (`ironlayer_OSS`) is tracked in the **same** private backlog —
+no changes to the public repo without a corresponding `[IN-PROGRESS]` item.
 
 ---
 

@@ -15,8 +15,6 @@ from rich.table import Table
 from rich.tree import Tree
 
 if TYPE_CHECKING:
-    from typing import Any
-
     from core_engine.models.model_definition import ModelDefinition
     from core_engine.models.plan import Plan
     from core_engine.sql_toolkit._types import (

@@ -8,6 +8,7 @@ verify determinism — identical inputs must produce identical outputs.
 from __future__ import annotations
 
 import pytest
+
 from ai_engine.engines.fragility_scorer import FragilityScore, FragilityScorer
 
 # ---------------------------------------------------------------------------
@@ -273,7 +274,7 @@ class TestBatchScoring:
         preds = {"X": 0.4, "Y": 0.5, "Z": 0.3}
         r1 = scorer.compute_batch(dag, preds)
         r2 = scorer.compute_batch(dag, preds)
-        for a, b in zip(r1, r2, strict=False):
+        for a, b in zip(r1, r2):
             assert a.model_name == b.model_name
             assert a.fragility_score == b.fragility_score
 

@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+
 from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 from core_engine.sql_toolkit._types import QualifyResult, SimplifyResult
 

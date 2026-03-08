@@ -13,11 +13,10 @@ from typing import Any
 
 import bcrypt
 from core_engine.state.repository import EventSubscriptionRepository
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, TenantDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 
 logger = logging.getLogger(__name__)
@@ -47,9 +46,9 @@ class EventSubscriptionCreate(BaseModel):
     )
     secret: str | None = Field(
         default=None,
-        min_length=32,
+        min_length=8,
         description=(
-            "Webhook signing secret (min 32 chars).  Used to compute "
+            "Webhook signing secret (min 8 chars).  Used to compute "
             "HMAC-SHA256 signatures sent in the X-IronLayer-Signature header.  "
             "The secret is bcrypt-hashed at rest."
         ),
@@ -72,8 +71,8 @@ class EventSubscriptionUpdate(BaseModel):
     url: str | None = Field(default=None, min_length=1, max_length=2048)
     secret: str | None = Field(
         default=None,
-        min_length=32,
-        description="New signing secret (min 32 chars).  Omit to leave unchanged.",
+        min_length=8,
+        description="New signing secret.  Omit to leave unchanged.",
     )
     event_types: list[str] | None = Field(default=None)
     active: bool | None = Field(default=None)
@@ -187,7 +186,10 @@ async def get_subscription(
     repo = EventSubscriptionRepository(session, tenant_id=tenant_id)
     row = await repo.get(subscription_id)
     if row is None:
-        raise not_found_404("Event subscription", str(subscription_id))
+        raise HTTPException(
+            status_code=404,
+            detail=f"Event subscription {subscription_id} not found",
+        )
     return _row_to_response(row)
 
 
@@ -222,7 +224,10 @@ async def update_subscription(
 
     row = await repo.update(subscription_id, **kwargs)
     if row is None:
-        raise not_found_404("Event subscription", str(subscription_id))
+        raise HTTPException(
+            status_code=404,
+            detail=f"Event subscription {subscription_id} not found",
+        )
 
     logger.info(
         "Event subscription updated: id=%d tenant=%s fields=%s",
@@ -247,7 +252,10 @@ async def delete_subscription(
     repo = EventSubscriptionRepository(session, tenant_id=tenant_id)
     deleted = await repo.delete(subscription_id)
     if not deleted:
-        raise not_found_404("Event subscription", str(subscription_id))
+        raise HTTPException(
+            status_code=404,
+            detail=f"Event subscription {subscription_id} not found",
+        )
 
     logger.info(
         "Event subscription deleted: id=%d tenant=%s",

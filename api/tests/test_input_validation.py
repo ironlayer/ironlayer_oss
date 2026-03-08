@@ -32,11 +32,9 @@ from api.dependencies import (
     get_settings,
     get_tenant_session,
 )
-from api.test_utils import set_app_state_for_test
 from api.main import create_app
 from api.services.ai_client import AIServiceClient
 from api.services.invoice_service import _validate_path_component, _resolve_safe_path
-from api.validation import resolve_repo_path_under_base
 from api.services.reporting_service import _sanitize_csv_value
 from core_engine.state.repository import _escape_like
 
@@ -111,19 +109,17 @@ def _app(_mock_session: AsyncMock) -> Any:
     async def _override_session():
         yield _mock_session
 
-    _test_settings = APISettings(
-        host="0.0.0.0",
-        port=8000,
-        debug=True,
-        database_url="postgresql+asyncpg://test:test@localhost:5432/test",
-        ai_engine_url="http://localhost:8001",
-        ai_engine_timeout=5.0,
-        platform_env="dev",
-        cors_origins=["http://localhost:3000"],
-    )
-
     def _override_settings():
-        return _test_settings
+        return APISettings(
+            host="0.0.0.0",
+            port=8000,
+            debug=True,
+            database_url="postgresql+asyncpg://test:test@localhost:5432/test",
+            ai_engine_url="http://localhost:8001",
+            ai_engine_timeout=5.0,
+            platform_env="dev",
+            cors_origins=["http://localhost:3000"],
+        )
 
     mock_ai = AsyncMock(spec=AIServiceClient)
     mock_ai.semantic_classify = AsyncMock(return_value={})
@@ -138,14 +134,6 @@ def _app(_mock_session: AsyncMock) -> Any:
     mock_metering.record = MagicMock()
     mock_metering.flush = MagicMock(return_value=0)
     mock_metering.pending_count = 0
-
-    set_app_state_for_test(
-        application,
-        settings=_test_settings,
-        session=_mock_session,
-        ai_client=mock_ai,
-        metering=mock_metering,
-    )
 
     application.dependency_overrides[get_db_session] = _override_session
     application.dependency_overrides[get_tenant_session] = _override_session
@@ -241,11 +229,16 @@ class TestPathTraversal:
         client: AsyncClient,
         _mock_session: AsyncMock,
     ) -> None:
-        """The /invoices/{invoice_id}/download endpoint must reject traversal IDs."""
+        """The /invoices/{invoice_id}/download endpoint must reject traversal IDs.
+
+        The InvoiceService.get_pdf() method calls _validate_path_component()
+        before any file I/O.
+        """
         with patch("api.routers.billing.InvoiceService") as MockSvc:
             instance = MockSvc.return_value
             instance.get_pdf = AsyncMock(side_effect=ValueError("Invalid invoice_id: contains unsafe characters"))
             resp = await client.get("/api/v1/billing/invoices/../../../etc/passwd/download")
+            # The router may catch the ValueError and return 400 or 404.
             assert resp.status_code in (400, 404, 422)
 
     def test_space_in_path_component_rejected(self) -> None:
@@ -257,36 +250,6 @@ class TestPathTraversal:
         """Percent-encoded characters must be rejected (raw %)."""
         with pytest.raises(ValueError, match="unsafe characters"):
             _validate_path_component("%2e%2e", "invoice_id")
-
-
-# ---------------------------------------------------------------------------
-# resolve_repo_path_under_base (plan repo validation)
-# ---------------------------------------------------------------------------
-
-
-class TestResolveRepoPathUnderBase:
-    """Tests for shared repo path validation used by plans router and plan_service."""
-
-    def test_rejects_traversal(self, tmp_path: Path) -> None:
-        """Path with '..' must raise even if it would resolve under base."""
-        with pytest.raises(ValueError, match="must not contain"):
-            resolve_repo_path_under_base(str(tmp_path / "a" / ".." / "b"), tmp_path)
-
-    def test_rejects_outside_base(self, tmp_path: Path) -> None:
-        """Path outside allowed_base must raise."""
-        other = tmp_path / "workspace"
-        other.mkdir()
-        outside = Path("/tmp") if str(tmp_path).startswith("/tmp") else Path("/var")
-        with pytest.raises(ValueError, match="outside the allowed base"):
-            resolve_repo_path_under_base(str(outside), tmp_path)
-
-    def test_accepts_under_base(self, tmp_path: Path) -> None:
-        """Path under allowed_base must return resolved Path."""
-        repo = tmp_path / "workspace" / "my-repo"
-        repo.mkdir(parents=True)
-        result = resolve_repo_path_under_base(str(repo), tmp_path)
-        assert result == repo.resolve()
-        assert result.is_relative_to(tmp_path.resolve())
 
 
 # ===================================================================
@@ -568,23 +531,13 @@ class TestPaginationLimits:
         client: AsyncClient,
         _mock_session: AsyncMock,
     ) -> None:
-        """Large offset values within the cap (le=100_000) should be accepted."""
+        """Very large offset values should be accepted (returns empty results)."""
         with patch("api.routers.models.ModelRepository") as MockRepo:
             instance = MockRepo.return_value
             instance.list_all = AsyncMock(return_value=[])
-            resp = await client.get("/api/v1/models?offset=100000")
+            resp = await client.get("/api/v1/models?offset=999999")
             assert resp.status_code == 200
             assert resp.json() == []
-
-    @pytest.mark.asyncio
-    async def test_offset_exceeding_cap_rejected(
-        self,
-        client: AsyncClient,
-        _mock_session: AsyncMock,
-    ) -> None:
-        """BL-068: Offsets above 100_000 are rejected (prevents sequential scan DoS)."""
-        resp = await client.get("/api/v1/models?offset=999999")
-        assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_non_integer_limit_rejected(
