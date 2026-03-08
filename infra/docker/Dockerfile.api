@@ -1,9 +1,9 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim@sha256:d6e4d224f70f9e0172a06a3a2eba2f768eb146811a349278b38fff3a36463b47 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev gcc && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv@sha256:10902f58a1606787602f303954cea099626a4adb02acbac4c69920fe9d278f82 /uv /usr/local/bin/uv
 
 WORKDIR /build
 
@@ -26,7 +26,7 @@ RUN mkdir -p /build/ai_engine/ai_engine && touch /build/ai_engine/ai_engine/__in
 ENV UV_SYSTEM_PYTHON=1
 RUN uv sync --package ironlayer-core --package ironlayer-api --no-dev --frozen
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim@sha256:d6e4d224f70f9e0172a06a3a2eba2f768eb146811a349278b38fff3a36463b47 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends libpq5 && \
     rm -rf /var/lib/apt/lists/* && \
@@ -43,5 +43,8 @@ COPY api/api/ /app/api/
 USER ironlayer
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)" || exit 1
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

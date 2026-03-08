@@ -11,12 +11,10 @@ from core_engine.state.repository import (
     RunRepository,
     WatermarkRepository,
 )
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.dependencies import SessionDep, SettingsDep, TenantDep
-from api.http_errors import not_found_404
+from api.dependencies import SessionDep, TenantDep
 from api.middleware.rbac import Permission, Role, require_permission
-from api.validation import resolve_repo_path_under_base
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +158,7 @@ async def get_model_health(
     model_repo = ModelRepository(session, tenant_id=tenant_id)
     row = await model_repo.get(model_name)
     if row is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
     run_repo = RunRepository(session, tenant_id=tenant_id)
     summary = await run_repo.get_model_run_summary(model_name)
@@ -241,7 +239,7 @@ async def get_model_lineage(
     repo = ModelRepository(session, tenant_id=tenant_id)
     target = await repo.get(model_name)
     if target is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
     all_models = await repo.list_all(limit=500)
 
@@ -299,7 +297,6 @@ async def get_column_lineage(
     model_name: str,
     session: SessionDep,
     tenant_id: TenantDep,
-    settings: SettingsDep,
     _role: Role = Depends(require_permission(Permission.READ_MODELS)),
     column: str | None = Query(
         default=None,
@@ -323,20 +320,12 @@ async def get_column_lineage(
     repo = ModelRepository(session, tenant_id=tenant_id)
     target = await repo.get(model_name)
     if target is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
-    # Load the model's SQL from the repo path (validate path under allowed base first).
+    # Load the model's SQL from the repo path.
     model_sql: str | None = None
     if target.repo_path:
-        try:
-            allowed_base = Path(settings.allowed_repo_base).resolve()
-            sql_path = resolve_repo_path_under_base(target.repo_path, allowed_base)
-        except ValueError as exc:
-            logger.warning("Model %s repo_path outside allowed base: %s", model_name, exc)
-            raise HTTPException(
-                status_code=400,
-                detail="Model repository path is outside the allowed base directory.",
-            ) from exc
+        sql_path = Path(target.repo_path)
         if sql_path.exists():
             try:
                 raw = sql_path.read_text(encoding="utf-8")
@@ -370,10 +359,9 @@ async def get_column_lineage(
             dialect=Dialect.DATABRICKS,
         )
     except SqlLineageError as exc:
-        logger.warning("Column lineage analysis failed for model %s: %s", model_name, exc, exc_info=True)
         raise HTTPException(
             status_code=422,
-            detail="Column lineage analysis failed.",
+            detail=f"Column lineage analysis failed: {exc}",
         ) from exc
 
     # If a specific column was requested, filter to just that column.
@@ -432,7 +420,7 @@ async def get_model(
     repo = ModelRepository(session, tenant_id=tenant_id)
     row = await repo.get(model_name)
     if row is None:
-        raise not_found_404("Model", model_name)
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
 
     # Fetch latest watermark.
     wm_repo = WatermarkRepository(session, tenant_id=tenant_id)

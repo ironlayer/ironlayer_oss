@@ -96,8 +96,7 @@ class TestSignup:
         )
 
         assert resp.status_code == 409
-        # Generic auth failure message is returned to avoid leaking account existence
-        assert "Invalid" in resp.json()["detail"] or "credentials" in resp.json()["detail"].lower()
+        assert "already exists" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_weak_password_422(self, client):
@@ -250,7 +249,7 @@ class TestLogin:
         )
 
         assert resp.status_code == 403
-        assert "Invalid" in resp.json()["detail"] or "credentials" in resp.json()["detail"].lower()
+        assert "deactivated" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_missing_email_422(self, client):

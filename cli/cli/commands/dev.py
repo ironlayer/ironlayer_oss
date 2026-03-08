@@ -21,7 +21,6 @@ import threading
 from pathlib import Path
 
 import typer
-from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -186,7 +185,30 @@ def _setup_local_env(
     # Load .env file if it exists (lower priority than explicit overrides).
     env_file = project_root / ".env"
     if env_file.exists():
-        load_dotenv(env_file, override=False)
+        _load_dotenv(env_file)
+
+
+def _load_dotenv(env_file: Path) -> None:
+    """Load environment variables from a .env file.
+
+    Only sets variables that are not already present in ``os.environ``
+    (existing values take precedence).
+    """
+    try:
+        content = env_file.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        os.environ.setdefault(key, value)
 
 
 def _build_services_table(

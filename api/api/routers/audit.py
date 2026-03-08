@@ -2,6 +2,7 @@
 
 All endpoints require the ``READ_AUDIT`` permission, which is granted to
 the OPERATOR role and above.  VIEWER-role users cannot access the audit log.
+The GDPR right-to-erasure endpoint requires the ``ADMIN`` role.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from core_engine.state.repository import AuditRepository
 from fastapi import APIRouter, Depends, Query
 
 from api.dependencies import SessionDep, TenantDep, require_feature
-from api.middleware.rbac import Permission, Role, require_permission
+from api.middleware.rbac import Permission, Role, require_permission, require_role
+from api.services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -90,3 +92,31 @@ async def verify_audit_chain(
         "is_valid": is_valid,
         "entries_checked": entries_checked,
     }
+
+
+@router.delete("/users/{user_id}")
+async def anonymize_user_audit_data(
+    user_id: str,
+    session: SessionDep,
+    tenant_id: TenantDep,
+    _role: Role = Depends(require_role(Role.ADMIN)),
+    _gate: None = Depends(require_feature(Feature.AUDIT_LOG)),
+) -> dict[str, Any]:
+    """GDPR right-to-erasure: anonymize all audit log entries for a user.
+
+    Replaces the ``actor`` field with ``[REDACTED]`` and clears
+    ``metadata_json`` for every entry belonging to ``user_id`` in this
+    tenant's audit log.  The audit record structure and counts are
+    preserved; only identifying information is removed.
+
+    Requires the ``ADMIN`` role.
+    """
+    svc = AuditService(session, tenant_id=tenant_id)
+    count = await svc.anonymize_user_data(user_id)
+    logger.info(
+        "GDPR anonymize: tenant=%s user=%s entries_anonymized=%d",
+        tenant_id,
+        user_id,
+        count,
+    )
+    return {"user_id": user_id, "entries_anonymized": count}

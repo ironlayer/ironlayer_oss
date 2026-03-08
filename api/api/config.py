@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Self
 
-from core_engine.config import PlatformEnv
-from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class PlatformEnv(str, Enum):
+    """Valid platform environment labels for the approval gate."""
+
+    DEV = "dev"
+    STAGING = "staging"
+    PRODUCTION = "production"
 
 
 class APISettings(BaseSettings):
@@ -38,14 +46,6 @@ class APISettings(BaseSettings):
     # Environment label used for approval gate logic.
     platform_env: PlatformEnv = PlatformEnv.DEV
 
-    @field_validator("platform_env", mode="before")
-    @classmethod
-    def _normalize_platform_env(cls, v: str | PlatformEnv) -> PlatformEnv | str:
-        """Accept \"production\" from API_PLATFORM_ENV and normalize to PROD."""
-        if isinstance(v, str) and v.lower() == "production":
-            return PlatformEnv.PROD
-        return v
-
     # Origins permitted by the CORS middleware.
     cors_origins: list[str] = ["http://localhost:3000"]
 
@@ -69,9 +69,6 @@ class APISettings(BaseSettings):
             )
         return self
 
-    # Request body size limit (bytes). Rejects requests with larger Content-Length.
-    max_request_body_size: int = 1_048_576  # 1 MiB
-
     # Rate limiting.
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 60
@@ -80,12 +77,6 @@ class APISettings(BaseSettings):
 
     # Token revocation.
     token_revocation_enabled: bool = True
-
-    # JWT signing secret (env: JWT_SECRET, no API_ prefix). Required in staging/prod.
-    jwt_secret: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("jwt_secret", "JWT_SECRET"),
-    )
 
     # Allowed base directory for repo_path validation (path traversal prevention).
     allowed_repo_base: str = "/workspace"

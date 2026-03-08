@@ -136,7 +136,7 @@ class BillingService:
                 info["status"] = sub.get("status", "unknown")
                 info["cancel_at_period_end"] = sub.get("cancel_at_period_end", False)
                 info["current_period_end"] = sub.get("current_period_end")
-            except Exception:  # Intentional: do not fail request on Stripe I/O errors
+            except Exception:
                 logger.warning(
                     "Failed to fetch Stripe subscription %s",
                     row.stripe_subscription_id,
@@ -355,7 +355,7 @@ class BillingService:
                     "Invalid ironlayer_max_seats value in Stripe metadata: %s",
                     max_seats_str,
                 )
-            except Exception:  # Intentional: do not fail sync on Stripe/metadata errors
+            except Exception:
                 logger.warning(
                     "Failed to sync max_seats from Stripe metadata for tenant %s",
                     row.tenant_id,
@@ -445,7 +445,7 @@ class StripeUsageReporter:
             while not self._stop_event.wait(self._interval):
                 try:
                     self._report_usage()
-                except Exception:  # Intentional: background reporter must not crash
+                except Exception:
                     logger.warning("Stripe usage reporting failed", exc_info=True)
 
         self._thread = threading.Thread(target=_run, name="stripe-usage-reporter", daemon=True)
@@ -530,7 +530,7 @@ class StripeUsageReporter:
                             event_count,
                             customer.tenant_id,
                         )
-                    except Exception:  # Intentional: continue with other tenants on Stripe errors
+                    except Exception:
                         logger.warning(
                             "Failed to report usage to Stripe for tenant %s",
                             customer.tenant_id,

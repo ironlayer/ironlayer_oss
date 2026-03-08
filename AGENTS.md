@@ -5,6 +5,23 @@ Individual repos have extended AGENTS.md files with repo-specific details.
 
 ---
 
+## Work Tracking
+
+**All work — including AI-agent work — must be tracked before starting.**
+
+1. Open `ironlayer_infra/BACKLOG.md` (private repo — canonical backlog).
+2. Find the item matching your task. If it doesn't exist, add it first.
+3. Change its status to `[IN-PROGRESS]` with today's date before writing any code.
+4. Only then begin implementation.
+
+See `ironlayer_infra/CLAUDE.md` for the full rule set (dependency verification,
+no-stubs rule, verification suite requirements, lessons learned update policy).
+
+OSS repo work (`ironlayer_OSS`) is tracked in the **same** private backlog —
+no changes to the public repo without a corresponding `[IN-PROGRESS]` item.
+
+---
+
 ## Project Overview
 
 Exodus is an AI-native data platform company with three products:

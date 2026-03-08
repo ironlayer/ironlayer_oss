@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:20-alpine@sha256:b88333c42c23fbd91596ebd7fd10de239cedab9617de04142dde7315e3bc0afa AS build
 
 ARG VITE_API_URL=https://api.ironlayer.app
 
@@ -11,7 +11,7 @@ COPY frontend/ .
 ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
-FROM nginx:alpine AS runtime
+FROM nginx:alpine@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba AS runtime
 
 RUN addgroup -S ironlayer && adduser -S ironlayer -G ironlayer
 
@@ -24,5 +24,8 @@ RUN chown -R ironlayer:ironlayer /var/cache/nginx /var/log/nginx /etc/nginx/conf
 USER ironlayer
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:3000/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

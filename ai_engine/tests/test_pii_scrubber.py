@@ -96,12 +96,12 @@ class TestSQLLiteralScrubbing:
 
 class TestDatabricksTokenScrubbing:
     def test_dapi_token_scrubbed(self):
-        text = "token=dapi_FAKE_TOKEN_FOR_TESTING for auth"
+        text = "token=dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for auth"
         result = scrub_for_llm(text)
-        assert "dapi_FAKE_TOKEN_FOR_TESTING" not in result
+        assert "dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in result
 
     def test_dapi_in_sql_context(self):
-        sql = "-- token: dapi_FAKE_TOKEN_FOR_TESTING\nSELECT 1"
+        sql = "-- token: dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nSELECT 1"
         result = scrub_sql_for_llm(sql)
         assert "dapi" not in result.lower() or "<TOKEN>" in result
 
@@ -148,7 +148,7 @@ class TestContainsPII:
         assert contains_pii("user@example.com") is True
 
     def test_token_detected(self):
-        assert contains_pii("dapi_FAKE_TOKEN_FOR_TESTING") is True
+        assert contains_pii("dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is True
 
     def test_sql_literal_detected(self):
         assert contains_pii("WHERE name = 'Alice'") is True

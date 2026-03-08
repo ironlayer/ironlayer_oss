@@ -1,0 +1,118 @@
+# IronLayer SLO Definitions
+# ─────────────────────────────────────────────────────────────────────────────
+# Service Level Objectives for all IronLayer platform services.
+#
+# Format: human-readable SLO register.  Prometheus alerting rules that
+# implement these SLOs are in alerting_rules.yml.
+#
+# Error budget = 1 - SLO target.  Budgets are tracked on a 30-day rolling
+# window.  The alert fires when the burn rate exceeds 2× budget consumption
+# (multi-burn-rate alerting à la Google SRE Workbook ch.5).
+#
+# Last reviewed: 2026-03-07
+
+version: "1.0"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # API Control Plane  (port 8000)
+  # ---------------------------------------------------------------------------
+  ironlayer-api:
+
+    - id: api-availability
+      name: API Availability
+      description: >
+        Percentage of non-5xx responses across all /api/v1/* endpoints,
+        excluding /api/v1/health and /metrics (infrastructure probes).
+      target: 99.9%           # 43.8 minutes of downtime budget per month
+      window: 30d
+      sli:
+        type: availability
+        good_events: http_requests_total{job="ironlayer-api",code!~"5.."}
+        total_events: http_requests_total{job="ironlayer-api",code!~"^(000)$"}
+        exclude_paths: ["/api/v1/health", "/metrics", "/readiness"]
+      error_budget_minutes_per_month: 43.8
+      alert_burn_rates: [14.4, 6, 1]   # fast / slow burn
+
+    - id: api-latency-p99
+      name: API p99 Latency — Plan Endpoints
+      description: >
+        99th-percentile response latency for plan creation, approval, and
+        application endpoints must remain below 500 ms.
+      target: 99%             # 1% of plan requests may exceed 500 ms
+      window: 30d
+      sli:
+        type: latency
+        histogram: http_request_duration_seconds_bucket{job="ironlayer-api",handler=~"/api/v1/plans.*"}
+        threshold_seconds: 0.5
+      alert_burn_rates: [14.4, 6]
+
+    - id: api-plan-determinism
+      name: Plan Determinism
+      description: >
+        Zero tolerance: identical SQL inputs with identical config must
+        always produce byte-for-byte identical execution plans.
+        Measured by the planner-determinism CI test suite on every deploy.
+      target: 100%
+      window: per-deploy
+      sli:
+        type: custom
+        source: ci-test-suite
+        test_suite: planner-determinism
+      note: >
+        Determinism failures are P0 incidents.  Any failure triggers an
+        immediate rollback via canary_deploy.sh auto-rollback.
+
+  # ---------------------------------------------------------------------------
+  # AI Advisory Engine  (port 8001)
+  # ---------------------------------------------------------------------------
+  ironlayer-ai:
+
+    - id: ai-availability
+      name: AI Engine Availability
+      description: >
+        The AI engine is advisory-only and non-critical-path.  A softer
+        availability SLO is appropriate — callers degrade gracefully when
+        the engine is unreachable.
+      target: 99.5%           # 3.65 hours of downtime budget per month
+      window: 30d
+      sli:
+        type: availability
+        good_events: http_requests_total{job="ironlayer-ai",code!~"5.."}
+        total_events: http_requests_total{job="ironlayer-ai"}
+        exclude_paths: ["/health"]
+      error_budget_minutes_per_month: 219
+      alert_burn_rates: [6, 1]
+
+    - id: ai-latency-p95
+      name: AI Engine p95 Latency
+      description: >
+        95th-percentile response time for AI advisory calls must stay
+        below 2 seconds (LLM-enabled paths have a separate budget).
+      target: 95%
+      window: 30d
+      sli:
+        type: latency
+        histogram: http_request_duration_seconds_bucket{job="ironlayer-ai"}
+        threshold_seconds: 2.0
+      alert_burn_rates: [6, 1]
+
+  # ---------------------------------------------------------------------------
+  # Frontend  (port 3000)
+  # ---------------------------------------------------------------------------
+  ironlayer-frontend:
+
+    - id: frontend-availability
+      name: Frontend Availability
+      description: >
+        Nginx successfully serving the React SPA.  Measured by HTTP 200
+        responses to GET /.
+      target: 99.9%
+      window: 30d
+      sli:
+        type: availability
+        good_events: nginx_http_requests_total{status="200"}
+        total_events: nginx_http_requests_total
+      error_budget_minutes_per_month: 43.8
+      alert_burn_rates: [14.4, 6, 1]

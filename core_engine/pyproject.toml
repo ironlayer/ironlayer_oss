@@ -1,6 +1,6 @@
 [project]
 name = "ironlayer-core"
-version = "0.3.0"
+version = "0.2.0"
 description = "IronLayer Core Engine — deterministic SQL transformation planning and execution"
 requires-python = ">=3.11,<3.13"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "sqlglot>=26.0,<30.0",  # Compatible with migration tools and other consumers; 26.x+ required for resolution when not using path source
+    "sqlglot==25.34.1",  # Pinned: last MIT-licensed version before Fivetran acquisition risk
     "networkx>=3.2,<4.0",
     "sqlalchemy[asyncio]>=2.0,<3.0",
     "alembic>=1.13,<2.0",

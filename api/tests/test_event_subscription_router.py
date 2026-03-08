@@ -6,11 +6,7 @@ using the standard IronLayer test patterns (mock session, dev tokens).
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
-import time
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,36 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-
-def _make_dev_token(
-    tenant_id: str = "default",
-    sub: str = "test-user",
-    role: str = "admin",
-    scopes: list[str] | None = None,
-) -> str:
-    """Generate a valid development-mode HMAC token (matches conftest logic)."""
-    secret = "test-secret-key-for-ironlayer-tests"
-    now = time.time()
-    payload: dict[str, Any] = {
-        "sub": sub,
-        "tenant_id": tenant_id,
-        "iss": "ironlayer",
-        "iat": now,
-        "exp": now + 3600,
-        "scopes": scopes or ["read", "write"],
-        "jti": "test-jti-event-sub",
-        "identity_kind": "user",
-        "role": role,
-    }
-    payload_json = json.dumps(payload)
-    signature = hmac.new(
-        secret.encode("utf-8"),
-        payload_json.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    token_bytes = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("ascii")
-    return f"bmdev.{token_bytes}.{signature}"
-
+from conftest import _make_dev_token
 
 # ---------------------------------------------------------------------------
 # Fixtures

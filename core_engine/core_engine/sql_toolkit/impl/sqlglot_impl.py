@@ -9,7 +9,7 @@ consumer files has been consolidated here.  Consumer files retain only their
 business logic and delegate all SQL parsing, analysis, transpilation,
 normalisation, diffing, safety checking, and rewriting to this implementation.
 
-Supports SQLGlot 26.x and later (see core_engine pyproject.toml).
+Supports SQLGlot v25.x (pinned at v25.34.1).
 """
 
 from __future__ import annotations
@@ -1564,17 +1564,14 @@ class SqlGlotLineageAnalyzer:
 
             if expression is not None:
                 if isinstance(expression, exp.Column):
-                    _name = getattr(expression, "name", None)
-                    _table = getattr(expression, "table", None)
-                    source_column = str(_name) if _name is not None else None
-                    if _table is not None:
-                        source_table = str(_table) if not isinstance(_table, str) else _table
+                    source_column = expression.name
+                    if expression.table:
+                        source_table = expression.table
                 elif isinstance(expression, exp.Table):
                     # Table leaf: the expression holds the table, but the
                     # column name is encoded in ``node.name`` as
                     # ``"table.column"`` or just ``"column"``.
-                    _tname = getattr(expression, "name", None)
-                    source_table = str(_tname) if _tname is not None else None
+                    source_table = expression.name
                     if name_str:
                         # Parse "table.column" → extract column part.
                         parts = name_str.split(".")
@@ -1606,29 +1603,6 @@ class SqlGlotLineageAnalyzer:
                 if len(parts) >= 2:
                     source_table = parts[-2]
 
-            # sqlglot 26+ may expose source column/table via source_name when
-            # expression/name parsing did not set them.
-            source_name = getattr(node, "source_name", "") or ""
-            if source_name:
-                parts = source_name.split(".")
-                if source_column is None and parts:
-                    source_column = parts[-1]
-                if source_table is None and len(parts) >= 2:
-                    source_table = parts[-2]
-
-            # Direct pass-through (e.g. SELECT col FROM table): when we have
-            # source_table but no source_column, the output column name is the
-            # source column name. Ensures API contract without relying on
-            # sqlglot's node shape.
-            if source_table is not None and source_column is None and output_column:
-                source_column = output_column
-
-            # Normalize quoted identifiers so API exposes canonical names.
-            if source_table is not None:
-                source_table = self._normalize_identifier(source_table)
-            if source_column is not None:
-                source_column = self._normalize_identifier(source_column)
-
             transform_type = self._classify_transform(node)
             transform_sql = ""
             if expression is not None:
@@ -1650,13 +1624,6 @@ class SqlGlotLineageAnalyzer:
             # Interior node — recurse into downstream.
             for child in downstream:
                 self._walk_lineage_tree(child, output_column, acc)
-
-    @staticmethod
-    def _normalize_identifier(value: str) -> str:
-        """Strip SQL double-quote wrapping so we expose canonical names."""
-        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
-            return value[1:-1]
-        return value
 
     @staticmethod
     def _classify_transform(node: Any) -> str:

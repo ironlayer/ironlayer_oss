@@ -1,0 +1,246 @@
+# IronLayer Prometheus Alerting Rules
+# ─────────────────────────────────────────────────────────────────────────────
+# Implements the SLOs defined in slos.yml using multi-burn-rate alerting.
+#
+# Deploy: copy to your Prometheus rules directory and reload:
+#   curl -X POST http://prometheus:9090/-/reload
+#
+# Labels:
+#   severity: page    — wakes on-call immediately (PagerDuty)
+#   severity: ticket  — creates a Jira ticket (non-urgent)
+#   severity: warning — visible on dashboard only
+
+groups:
+
+  # ---------------------------------------------------------------------------
+  # API Control Plane — Availability
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.api.availability
+    interval: 1m
+    rules:
+
+      # Fast-burn: >14.4× error budget consumed → 1 hour until budget exhausted.
+      - alert: APIHighErrorRateFastBurn
+        expr: |
+          (
+            sum(rate(http_requests_total{job="ironlayer-api",code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="ironlayer-api"}[5m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          service: ironlayer-api
+          slo: api-availability
+        annotations:
+          summary: "API error rate fast-burn ({{ $value | humanizePercentage }})"
+          description: >
+            API 5xx error rate is {{ $value | humanizePercentage }}, which is
+            14.4× the 0.1% error budget.  At this rate the 30-day budget will
+            be exhausted in ~1 hour.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/api-error-rate"
+
+      # Slow-burn: >6× error budget for 30 minutes → budget exhausted in 5 hours.
+      - alert: APIHighErrorRateSlowBurn
+        expr: |
+          (
+            sum(rate(http_requests_total{job="ironlayer-api",code=~"5.."}[30m]))
+            /
+            sum(rate(http_requests_total{job="ironlayer-api"}[30m]))
+          ) > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: ticket
+          service: ironlayer-api
+          slo: api-availability
+        annotations:
+          summary: "API error rate slow-burn ({{ $value | humanizePercentage }})"
+          description: >
+            API 5xx error rate has been elevated for 15 min.  Error budget
+            consumption is 6× the target rate.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/api-error-rate"
+
+      # Catastrophic spike: >2% error rate for 2 minutes.
+      # Threshold is above the fast-burn page trigger (14.4 × 0.1% = 1.44%)
+      # to prevent double-paging alongside APIHighErrorRateFastBurn.
+      # At >2% error rate the incident is clearly exceptional regardless of
+      # burn-rate windows and warrants immediate escalation.
+      - alert: APIErrorSpike
+        expr: |
+          sum(rate(http_requests_total{job="ironlayer-api",code=~"5.."}[2m]))
+          /
+          sum(rate(http_requests_total{job="ironlayer-api"}[2m])) > 0.02
+        for: 2m
+        labels:
+          severity: ticket
+          service: ironlayer-api
+          slo: api-availability
+        annotations:
+          summary: "API 5xx spike: {{ $value | humanizePercentage }} error rate"
+          description: >
+            More than 2% of API requests are returning 5xx errors — above the
+            fast-burn page threshold.  Immediate investigation required.
+            Check application logs, database connectivity, and upstream dependencies.
+
+  # ---------------------------------------------------------------------------
+  # API Control Plane — Latency
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.api.latency
+    interval: 1m
+    rules:
+
+      # Fast-burn: p99 latency > 500ms consuming budget 14.4× faster than target.
+      - alert: APIPlanLatencyHighFastBurn
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{
+                job="ironlayer-api",
+                handler=~"/api/v1/plans.*"
+              }[5m])
+            )
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: page
+          service: ironlayer-api
+          slo: api-latency-p99
+        annotations:
+          summary: "API plan endpoint p99 latency {{ $value | humanizeDuration }}"
+          description: >
+            99th-percentile latency for /api/v1/plans/* has been above 500 ms
+            for 5 minutes, breaching the latency SLO.
+
+      # Warning: p95 > 400ms — leading indicator before p99 SLO breach.
+      - alert: APIPlanLatencyWarning
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{
+                job="ironlayer-api",
+                handler=~"/api/v1/plans.*"
+              }[10m])
+            )
+          ) > 0.4
+        for: 5m
+        labels:
+          severity: warning
+          service: ironlayer-api
+          slo: api-latency-p99
+        annotations:
+          summary: "API plan endpoint p95 latency elevated {{ $value | humanizeDuration }}"
+
+  # ---------------------------------------------------------------------------
+  # AI Engine — Availability
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.ai.availability
+    interval: 1m
+    rules:
+
+      - alert: AIEngineHighErrorRateFastBurn
+        expr: |
+          (
+            sum(rate(http_requests_total{job="ironlayer-ai",code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="ironlayer-ai"}[5m]))
+          ) > (6 * 0.005)
+        for: 5m
+        labels:
+          severity: ticket
+          service: ironlayer-ai
+          slo: ai-availability
+        annotations:
+          summary: "AI engine error rate elevated ({{ $value | humanizePercentage }})"
+          description: >
+            AI engine 5xx error rate is 6× the 0.5% budget.  Note: callers
+            degrade gracefully via circuit breaker — this is non-critical-path.
+
+      - alert: AIEngineDown
+        expr: |
+          sum(up{job="ironlayer-ai"}) == 0
+        for: 2m
+        labels:
+          severity: ticket
+          service: ironlayer-ai
+        annotations:
+          summary: "AI engine is down"
+          description: >
+            All AI engine instances have been unreachable for 2 minutes.
+            API callers will use circuit-breaker fallback (null advisory).
+
+  # ---------------------------------------------------------------------------
+  # AI Engine — Latency
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.ai.latency
+    interval: 1m
+    rules:
+
+      - alert: AIEngineHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{job="ironlayer-ai"}[10m])
+            )
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          service: ironlayer-ai
+          slo: ai-latency-p95
+        annotations:
+          summary: "AI engine p95 latency {{ $value | humanizeDuration }}"
+          description: >
+            95th-percentile AI engine latency has exceeded 2 seconds for
+            10 minutes.  Check LLM token budget and upstream API rate limits.
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure — General Health
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.infra
+    interval: 1m
+    rules:
+
+      # Redis connectivity (rate limiting + token revocation depend on it).
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: page
+          service: redis
+        annotations:
+          summary: "Redis is down"
+          description: >
+            Redis has been unreachable for 2 minutes.  Rate limiting will fall
+            back to in-process (per-replica) mode.  Token revocation L2 cache
+            is degraded — L3 (DB) remains operational.
+
+      # PostgreSQL connectivity.
+      - alert: DatabaseDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: page
+          service: postgres
+        annotations:
+          summary: "PostgreSQL is down"
+          description: >
+            Primary PostgreSQL database is unreachable.  All API endpoints
+            that require database access will return 503.
+
+      # Disk pressure on the database host.
+      - alert: DatabaseDiskFull
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/var/lib/postgresql"}
+            /
+            node_filesystem_size_bytes{mountpoint="/var/lib/postgresql"}
+          ) < 0.10
+        for: 5m
+        labels:
+          severity: page
+          service: postgres
+        annotations:
+          summary: "PostgreSQL disk < 10% free"
+          description: >
+            Less than 10% disk space remaining on the PostgreSQL data volume.
+            Risk of write failures and data corruption within hours.

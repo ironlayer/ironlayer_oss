@@ -46,16 +46,41 @@ class AuthService:
         self,
         session: AsyncSession,
         token_manager: TokenManager | None = None,
-        settings: Any = None,
     ) -> None:
         self._session = session
-        if token_manager is not None:
-            self._tm = token_manager
-        elif settings is not None:
-            from api.middleware.auth import _build_token_config_from_settings
-            self._tm = TokenManager(_build_token_config_from_settings(settings))
-        else:
-            raise TypeError("AuthService requires either token_manager or settings")
+        self._tm = token_manager or self._default_token_manager()
+
+    @staticmethod
+    def _default_token_manager() -> TokenManager:
+        """Build a TokenManager from environment variables.
+
+        In dev mode, generates a random per-process secret if JWT_SECRET
+        is not set.  In all other modes, JWT_SECRET must be set explicitly.
+        """
+        import os
+        import secrets as _secrets
+
+        from pydantic import SecretStr
+
+        auth_mode_raw = os.environ.get("AUTH_MODE", "development").lower()
+        try:
+            auth_mode = AuthMode(auth_mode_raw)
+        except ValueError:
+            auth_mode = AuthMode.DEVELOPMENT
+
+        jwt_secret_value = os.environ.get("JWT_SECRET", "")
+        if not jwt_secret_value:
+            if auth_mode == AuthMode.DEVELOPMENT:
+                jwt_secret_value = f"dev-{_secrets.token_hex(32)}"
+            else:
+                raise RuntimeError(f"JWT_SECRET environment variable must be set when AUTH_MODE={auth_mode.value}.")
+
+        return TokenManager(
+            TokenConfig(
+                auth_mode=auth_mode,
+                jwt_secret=SecretStr(jwt_secret_value),
+            )
+        )
 
     # ------------------------------------------------------------------
     # Signup

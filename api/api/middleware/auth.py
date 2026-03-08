@@ -43,13 +43,8 @@ class _RevocationCache:
     exists, the caller should fail closed (reject the request).
 
     The cache is intentionally simple (dict + monotonic timestamps)
-    with no external dependencies.  It is safe for single-process use.
-
-    **Multi-replica behaviour:** Revocation state is process-local. A token
-    revoked on one replica may still be accepted by other replicas for up to
-    ``ttl_seconds`` (default 30s) until their local cache expires or they
-    query the database. For strict revocation across all replicas, use a
-    shared store (e.g. Redis) for revocation state instead of this cache.
+    with no external dependencies.  It is safe for single-process
+    use; for multi-replica deployments, consider a shared Redis cache.
 
     Parameters
     ----------
@@ -189,8 +184,21 @@ _PUBLIC_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _build_token_config_from_settings(settings: Any) -> TokenConfig:
-    """Build :class:`TokenConfig` from :class:`APISettings` (app.state.settings)."""
+def _build_token_config() -> TokenConfig:
+    """Construct a :class:`TokenConfig` from environment variables.
+
+    Reads the following env vars with sensible defaults:
+
+    - ``AUTH_MODE`` -- one of ``jwt``, ``kms_exchange``, ``oidc_onprem``,
+      ``development``.  Defaults to ``development``.
+    - ``JWT_SECRET`` -- signing/verification secret.
+    - ``JWT_ALGORITHM`` -- e.g. ``HS256``.
+    - ``TOKEN_TTL_SECONDS`` -- default token lifetime.
+    - ``MAX_TOKEN_TTL_SECONDS`` -- hard cap on token lifetime.
+    - ``OIDC_ISSUER_URL`` -- required when ``AUTH_MODE=oidc_onprem``.
+    - ``OIDC_AUDIENCE`` -- audience claim for OIDC validation.
+    - ``KMS_KEY_ARN`` -- required when ``AUTH_MODE=kms_exchange``.
+    """
     from pydantic import SecretStr
 
     auth_mode_raw = os.environ.get("AUTH_MODE", "development").lower()
@@ -200,7 +208,7 @@ def _build_token_config_from_settings(settings: Any) -> TokenConfig:
         logger.warning("Unknown AUTH_MODE '%s'; falling back to development", auth_mode_raw)
         auth_mode = AuthMode.DEVELOPMENT
 
-    jwt_secret_value = settings.jwt_secret.get_secret_value() if settings.jwt_secret else ""
+    jwt_secret_value = os.environ.get("JWT_SECRET", "")
     if not jwt_secret_value:
         if auth_mode == AuthMode.DEVELOPMENT:
             jwt_secret_value = f"dev-{secrets.token_hex(32)}"
@@ -234,12 +242,6 @@ def _build_token_config_from_settings(settings: Any) -> TokenConfig:
     )
 
 
-def _build_token_config() -> TokenConfig:
-    """Build TokenConfig from env (legacy). Prefer _build_token_config_from_settings(settings)."""
-    from api.config import load_api_settings
-    return _build_token_config_from_settings(load_api_settings())
-
-
 def _is_public_path(path: str) -> bool:
     """Return ``True`` if the path should bypass authentication."""
     if path in _PUBLIC_PATHS:
@@ -261,20 +263,10 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: Any) -> None:
         super().__init__(app)
-        self._token_manager: TokenManager | None = None
-        self._auth_mode: AuthMode | None = None
-
-    def _ensure_token_manager(self, request: Request) -> None:
-        """Build token manager from app.state.settings on first request."""
-        if self._token_manager is not None:
-            return
-        settings = getattr(request.app.state, "settings", None)
-        if settings is None:
-            raise RuntimeError("app.state.settings not set; ensure lifespan has run")
-        config = _build_token_config_from_settings(settings)
+        config = _build_token_config()
         self._token_manager = TokenManager(config)
         self._auth_mode = config.auth_mode
-        logger.info("AuthenticationMiddleware token config ready (mode=%s)", config.auth_mode.value)
+        logger.info("AuthenticationMiddleware initialised (mode=%s)", config.auth_mode.value)
 
     @staticmethod
     def _extract_role_from_claims(claims: Any) -> str | None:
@@ -294,7 +286,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             dumped = claims.model_dump()
             return dumped.get("role")
         except AttributeError:
-            return None  # Pydantic v1 or missing model_dump
+            pass
         return None
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -303,8 +295,6 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         # Allow public endpoints through without authentication.
         if _is_public_path(path):
             return await call_next(request)
-
-        self._ensure_token_manager(request)
 
         # Extract the Authorization header.
         auth_header = request.headers.get("authorization")
@@ -390,8 +380,11 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         API keys are validated via the :class:`APIKeyRepository` which checks
         the SHA-256 hash, expiration, and revocation status.
         """
-        session_factory = getattr(request.app.state, "session_factory", None)
-        if session_factory is None:
+        from api.dependencies import get_session_factory
+
+        try:
+            session_factory = get_session_factory()
+        except RuntimeError:
             logger.error("Cannot validate API key: database not initialised")
             return JSONResponse(
                 status_code=503,
@@ -430,7 +423,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
                 await session.commit()
 
-        except Exception:  # Intentional: do not leak DB/session errors; return 401
+        except Exception:
             logger.warning("API key validation failed", exc_info=True)
             return JSONResponse(
                 status_code=401,
@@ -475,7 +468,7 @@ def init_license_manager(license_path: str | None = None) -> None:
             logger.warning("License at %s has expired -- falling back to Community", license_path)
         except FileNotFoundError:
             logger.warning("License file not found: %s -- using Community tier", license_path)
-        except Exception:  # Intentional: any load/parse error → fall back to Community tier
+        except Exception:
             logger.warning("Failed to load license: %s -- using Community tier", license_path, exc_info=True)
 
 

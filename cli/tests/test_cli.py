@@ -490,7 +490,7 @@ class TestPlanCommand:
 class TestShowCommand:
     """Tests for `platform show <plan_path>`."""
 
-    @patch("cli.commands.show.display_plan_summary")
+    @patch("cli.app.display_plan_summary")
     @patch("core_engine.planner.deserialize_plan")
     def test_show_renders_plan_summary(
         self,
@@ -549,7 +549,7 @@ class TestShowCommand:
 
         assert result.exit_code == 3
 
-    @patch("cli.commands.show.display_plan_summary")
+    @patch("cli.app.display_plan_summary")
     @patch("core_engine.planner.deserialize_plan")
     def test_show_empty_plan_displays_no_steps_message(
         self,
@@ -581,8 +581,8 @@ class TestShowCommand:
 class TestApplyCommand:
     """Tests for `platform apply <plan_path>`."""
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -628,8 +628,8 @@ class TestApplyCommand:
         executor_instance.execute_step.assert_called_once()
         executor_instance.__exit__.assert_called_once()
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -670,7 +670,7 @@ class TestApplyCommand:
 
         assert result.exit_code == 0
 
-    @patch("cli.commands.apply.load_model_sql_map")
+    @patch("cli.app._load_model_sql_map")
     @patch("core_engine.planner.deserialize_plan")
     def test_apply_staging_without_approve_by_or_auto_approve_fails(
         self,
@@ -705,8 +705,8 @@ class TestApplyCommand:
         result = runner.invoke(app, ["apply", "/nonexistent/plan.json"])
         assert result.exit_code != 0
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -732,8 +732,8 @@ class TestApplyCommand:
         assert result.exit_code == 0
         mock_executor_cls.assert_not_called()
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -772,8 +772,8 @@ class TestApplyCommand:
         assert result.exit_code == 3
         executor_instance.__exit__.assert_called_once()
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -815,7 +815,7 @@ class TestApplyCommand:
         assert statuses[0] == "FAIL"
         assert statuses.count("CANCELLED") == 2
 
-    @patch("cli.commands.apply.load_model_sql_map")
+    @patch("cli.app._load_model_sql_map")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -859,8 +859,8 @@ class TestApplyCommand:
         assert len(output) == 1
         assert output[0]["status"] == "SUCCESS"
 
-    @patch("cli.commands.apply.load_model_sql_map")
-    @patch("cli.commands.apply.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.planner.deserialize_plan")
@@ -928,8 +928,8 @@ class TestApplyCommand:
 class TestBackfillCommand:
     """Tests for `platform backfill --model ... --start ... --end ...`."""
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1039,8 +1039,8 @@ class TestBackfillCommand:
 
         assert result.exit_code == 3
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1084,8 +1084,8 @@ class TestBackfillCommand:
         parameters = call_kwargs.kwargs.get("parameters", call_kwargs[1].get("parameters"))
         assert parameters["cluster_id"] == "my-cluster"
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1127,7 +1127,7 @@ class TestBackfillCommand:
 
         assert result.exit_code == 3
 
-    @patch("cli.commands.backfill.load_model_sql_map")
+    @patch("cli.app._load_model_sql_map")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1174,8 +1174,8 @@ class TestBackfillCommand:
         assert isinstance(output, list)
         assert output[0]["model"] == "analytics.orders_daily"
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1223,7 +1223,7 @@ class TestBackfillCommand:
 class TestModelsCommand:
     """Tests for `platform models <repo>`."""
 
-    @patch("cli.commands.models.display_model_list")
+    @patch("cli.app.display_model_list")
     @patch("core_engine.loader.load_models_from_directory")
     def test_models_lists_from_repo(
         self,
@@ -1250,7 +1250,7 @@ class TestModelsCommand:
         displayed_models = mock_display.call_args[0][1]
         assert len(displayed_models) == 2
 
-    @patch("cli.commands.models.display_model_list")
+    @patch("cli.app.display_model_list")
     @patch("core_engine.loader.load_models_from_directory", return_value=[])
     def test_models_empty_repo_shows_message_exits_zero(
         self,
@@ -1318,7 +1318,7 @@ class TestModelsCommand:
         assert output[0]["tags"] == ["core", "finance"]
         assert output[0]["dependencies"] == ["staging.raw_orders"]
 
-    @patch("cli.commands.models.display_model_list")
+    @patch("cli.app.display_model_list")
     @patch("core_engine.loader.load_models_from_directory")
     def test_models_uses_repo_root_when_no_models_subdir(
         self,
@@ -1343,7 +1343,7 @@ class TestModelsCommand:
 class TestLineageCommand:
     """Tests for `platform lineage <repo> --model <name>`."""
 
-    @patch("cli.commands.lineage.display_lineage")
+    @patch("cli.app.display_lineage")
     @patch("core_engine.graph.get_downstream", return_value=["downstream_a"])
     @patch("core_engine.graph.get_upstream", return_value=["upstream_a", "upstream_b"])
     @patch("core_engine.graph.build_dag")
@@ -1385,7 +1385,7 @@ class TestLineageCommand:
         assert call_args[2] == ["upstream_a", "upstream_b"]
         assert call_args[3] == ["downstream_a"]
 
-    @patch("cli.commands.lineage.display_lineage")
+    @patch("cli.app.display_lineage")
     @patch("core_engine.graph.build_dag")
     @patch("core_engine.loader.load_models_from_directory")
     def test_lineage_unknown_model_exits_with_error(
@@ -1460,7 +1460,7 @@ class TestLineageCommand:
         assert output["upstream"] == ["upstream_x"]
         assert output["downstream"] == ["downstream_x"]
 
-    @patch("cli.commands.lineage.display_lineage")
+    @patch("cli.app.display_lineage")
     @patch("core_engine.graph.build_dag")
     @patch("core_engine.loader.load_models_from_directory", return_value=[])
     def test_lineage_empty_repo_exits_zero(
@@ -1509,7 +1509,7 @@ class TestLineageCommand:
 
         assert result.exit_code == 3
 
-    @patch("cli.commands.lineage.display_lineage")
+    @patch("cli.app.display_lineage")
     @patch("core_engine.graph.build_dag")
     @patch("core_engine.loader.load_models_from_directory")
     def test_lineage_unknown_model_shows_available_models(
@@ -1550,8 +1550,8 @@ class TestLineageCommand:
 class TestGlobalOptions:
     """Tests for global callback options (--env, --json, --metrics-file)."""
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1609,8 +1609,8 @@ class TestGlobalOptions:
         assert result.exit_code in (0, 2)
         assert "IronLayer" in result.output or "Usage" in result.output
 
-    @patch("cli.commands.backfill.load_model_sql_map")
-    @patch("cli.commands.backfill.display_run_results")
+    @patch("cli.app._load_model_sql_map")
+    @patch("cli.app.display_run_results")
     @patch("core_engine.executor.LocalExecutor")
     @patch("core_engine.config.load_settings")
     @patch("core_engine.models.plan.compute_deterministic_id", return_value="det_id_123")
@@ -1661,15 +1661,15 @@ class TestHelpers:
     """Tests for internal helper functions in app.py."""
 
     def test_format_input_range_with_none(self):
-        from cli.helpers import format_input_range
+        from cli.app import _format_input_range
 
-        assert format_input_range(None) == "-"
+        assert _format_input_range(None) == "-"
 
     def test_format_input_range_with_date_range(self):
-        from cli.helpers import format_input_range
+        from cli.app import _format_input_range
 
         dr = DateRange(start=date(2025, 1, 1), end=date(2025, 1, 31))
-        result = format_input_range(dr)
+        result = _format_input_range(dr)
         assert "2025-01-01" in result
         assert "2025-01-31" in result
         assert ".." in result

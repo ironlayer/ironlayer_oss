@@ -154,7 +154,8 @@ ironlayer/
 - [Architecture](docs/architecture.md) -- Dual-engine design, determinism invariant, multi-tenant model
 - [CLI Reference](docs/cli-reference.md) -- Every command with flags, env vars, exit codes
 - [API Reference](docs/api-reference.md) -- REST API authentication and endpoints
-- Deployment Guide -- See `docker-compose.yml` and `infra/` for Docker Compose and Terraform setup
+- [Deployment Guide](docs/deployment.md) -- Docker Compose, Terraform (Azure Container Apps)
+- [Azure VM Setup](docs/azure-vm-setup.md) -- Deployment runner VM
 - [Release & Deployment Verification](docs/release-verification.md) -- How to verify PyPI, Cloudflare, and docs are live
 
 ## Tech Stack

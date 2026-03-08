@@ -18,63 +18,61 @@ from api.services.ai_client import AIServiceClient
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Settings (request-scoped from app.state)
+# Settings
 # ---------------------------------------------------------------------------
 
+_settings_cache: APISettings | None = None
 
-def get_settings(request: Request) -> APISettings:
-    """Return :class:`APISettings` from app.state (set in lifespan)."""
-    return request.app.state.settings
+
+def get_settings() -> APISettings:
+    """Return the cached :class:`APISettings` singleton."""
+    global _settings_cache  # noqa: PLW0603
+    if _settings_cache is None:
+        _settings_cache = load_api_settings()
+    return _settings_cache
 
 
 SettingsDep = Annotated[APISettings, Depends(get_settings)]
 
 # ---------------------------------------------------------------------------
-# Database session (engine/factory created in lifespan, stored on app.state)
+# Database session
 # ---------------------------------------------------------------------------
 
-
-def init_engine(settings: APISettings) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
-    """Create async engine and session factory. Caller stores on app.state."""
-    engine = get_engine(settings.database_url)
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    return engine, session_factory
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-async def dispose_engine(engine: AsyncEngine) -> None:
-    """Dispose the engine pool (call during shutdown)."""
-    await engine.dispose()
+def init_engine(settings: APISettings) -> AsyncEngine:
+    """Create and cache the global async engine."""
+    global _engine, _session_factory  # noqa: PLW0603
+    _engine = get_engine(settings.database_url)
+    _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    return _engine
 
 
-def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
-    """Return the async session factory from app.state."""
-    return request.app.state.session_factory
+async def dispose_engine() -> None:
+    """Dispose the global engine pool (call during shutdown)."""
+    global _engine, _session_factory  # noqa: PLW0603
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _session_factory = None
 
 
-_ENGINE_NOT_INITIALISED = (
-    "Database engine has not been initialised. Ensure lifespan has run (app.state.session_factory)."
-)
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the global async session factory.
+
+    Used by components that operate outside FastAPI's dependency injection
+    (e.g. Starlette middleware) and need direct session access.
+    """
+    if _session_factory is None:
+        raise RuntimeError(
+            "Database engine has not been initialised. Ensure init_engine() is called during application startup."
+        )
+    return _session_factory
 
 
-async def _with_session(
-    session_factory: async_sessionmaker[AsyncSession],
-    tenant_id: str | None = None,
-) -> AsyncGenerator[AsyncSession, None]:
-    """Internal helper: yield a session with optional tenant RLS context."""
-    session = session_factory()
-    try:
-        if tenant_id is not None:
-            await set_tenant_context(session, tenant_id)
-        yield session
-        await session.commit()
-    except Exception:  # Rollback on any error (DB, validation, etc.)
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
-
-
-async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield an ``AsyncSession`` **without** tenant RLS context.
 
     .. warning:: **No Row-Level Security**
@@ -101,9 +99,19 @@ async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]
 
     The session commits on clean exit and rolls back on exception.
     """
-    session_factory = get_session_factory(request)
-    async for session in _with_session(session_factory, tenant_id=None):
+    if _session_factory is None:
+        raise RuntimeError(
+            "Database engine has not been initialised. Ensure init_engine() is called during application startup."
+        )
+    session = _session_factory()
+    try:
         yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
 
 
 async def get_tenant_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -115,12 +123,24 @@ async def get_tenant_session(request: Request) -> AsyncGenerator[AsyncSession, N
 
     This is the primary session dependency for all tenant-scoped endpoints.
     """
+    if _session_factory is None:
+        raise RuntimeError(
+            "Database engine has not been initialised. Ensure init_engine() is called during application startup."
+        )
     tenant_id = getattr(request.state, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    session_factory = get_session_factory(request)
-    async for session in _with_session(session_factory, tenant_id=tenant_id):
+
+    session = _session_factory()
+    try:
+        await set_tenant_context(session, tenant_id)
         yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
@@ -132,7 +152,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]
 PublicSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
 
 
-async def get_admin_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_admin_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield an ``AsyncSession`` **without** tenant RLS context for admin operations.
 
     .. warning:: **No Row-Level Security**
@@ -155,9 +175,19 @@ async def get_admin_session(request: Request) -> AsyncGenerator[AsyncSession, No
 
     The session commits on clean exit and rolls back on exception.
     """
-    session_factory = get_session_factory(request)
-    async for session in _with_session(session_factory, tenant_id=None):
+    if _session_factory is None:
+        raise RuntimeError(
+            "Database engine has not been initialised. Ensure init_engine() is called during application startup."
+        )
+    session = _session_factory()
+    try:
         yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
 
 
 # WARNING: AdminSessionDep provides a session WITHOUT tenant RLS context.
@@ -166,60 +196,84 @@ async def get_admin_session(request: Request) -> AsyncGenerator[AsyncSession, No
 AdminSessionDep = Annotated[AsyncSession, Depends(get_admin_session)]
 
 # ---------------------------------------------------------------------------
-# AI service client (created in lifespan, stored on app.state)
+# AI service client
 # ---------------------------------------------------------------------------
+
+_ai_client: AIServiceClient | None = None
 
 
 def init_ai_client(settings: APISettings) -> AIServiceClient:
-    """Create :class:`AIServiceClient`. Caller stores on app.state."""
-    return AIServiceClient(
+    """Create and cache the global :class:`AIServiceClient`."""
+    global _ai_client  # noqa: PLW0603
+    _ai_client = AIServiceClient(
         base_url=settings.ai_engine_url,
         timeout=settings.ai_engine_timeout,
     )
+    return _ai_client
 
 
-async def dispose_ai_client(client: AIServiceClient) -> None:
+async def dispose_ai_client() -> None:
     """Close the AI client's underlying HTTP pool."""
-    await client.close()
+    global _ai_client  # noqa: PLW0603
+    if _ai_client is not None:
+        await _ai_client.close()
+        _ai_client = None
 
 
-def get_ai_client(request: Request) -> AIServiceClient:
-    """Return the :class:`AIServiceClient` from app.state."""
-    return request.app.state.ai_client
+def get_ai_client() -> AIServiceClient:
+    """Return the cached :class:`AIServiceClient` singleton."""
+    if _ai_client is None:
+        raise RuntimeError(
+            "AI client has not been initialised. Ensure init_ai_client() is called during application startup."
+        )
+    return _ai_client
 
 
 AIClientDep = Annotated[AIServiceClient, Depends(get_ai_client)]
 
 # ---------------------------------------------------------------------------
-# Metering collector (created in lifespan, stored on app.state)
+# Metering collector
 # ---------------------------------------------------------------------------
+
+_metering_collector: MeteringCollector | None = None
 
 
 def init_metering(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> MeteringCollector:
-    """Create :class:`MeteringCollector`. Caller stores on app.state."""
+    """Create and cache the global :class:`MeteringCollector`.
+
+    Initialises a :class:`DatabaseSink` backed by the provided session
+    factory and starts the background flush thread.
+    """
+    global _metering_collector  # noqa: PLW0603
     from core_engine.metering.collector import DatabaseSink
 
     sink = DatabaseSink(session_factory)
-    collector = MeteringCollector(
+    _metering_collector = MeteringCollector(
         sink=sink,
         flush_interval_seconds=30.0,
         max_buffer_size=500,
     )
-    collector.start_background_flush()
-    return collector
+    _metering_collector.start_background_flush()
+    return _metering_collector
 
 
-def dispose_metering(collector: MeteringCollector | None) -> None:
+def dispose_metering() -> None:
     """Stop the background flush thread and do a final flush."""
-    if collector is not None:
-        collector.stop_background_flush()
+    global _metering_collector  # noqa: PLW0603
+    if _metering_collector is not None:
+        _metering_collector.stop_background_flush()
+        _metering_collector = None
 
 
-def get_metering_collector(request: Request) -> MeteringCollector:
-    """Return the :class:`MeteringCollector` from app.state."""
-    return request.app.state.metering
+def get_metering_collector() -> MeteringCollector:
+    """Return the cached :class:`MeteringCollector` singleton."""
+    if _metering_collector is None:
+        raise RuntimeError(
+            "MeteringCollector has not been initialised. Ensure init_metering() is called during application startup."
+        )
+    return _metering_collector
 
 
 MeteringDep = Annotated[MeteringCollector, Depends(get_metering_collector)]

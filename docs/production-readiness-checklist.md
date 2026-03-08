@@ -46,29 +46,4 @@ After deployment, confirm:
 2. Login/signup and protected endpoints require a valid token.
 3. If billing is enabled, Stripe webhook delivery succeeds and subscription flows work.
 
-See [release-verification.md](release-verification.md) for release and deploy verification. See `docker-compose.yml` and `infra/` for deployment options.
-
-## Database migrations
-
-Before each deployment, run Alembic migrations:
-
-```bash
-alembic upgrade head
-```
-
-In dev mode, migrations run automatically on startup. In staging/production, run them explicitly before deploying new code.
-
-## Monitoring
-
-- **Prometheus metrics**: Available at `/metrics` when the API is running.
-- **Grafana dashboards**: Pre-configured in `docker-compose.yml` (Prometheus + Grafana services).
-- **Health probes**: `/ready` for Kubernetes readiness, `/api/v1/health` for liveness.
-- **Structured logging**: Set `API_STRUCTURED_LOGGING=true` for JSON logs compatible with SIEM / log aggregation.
-- **Audit log**: Hash-chained tamper-evident audit trail at `GET /api/v1/audit`.
-
-## Secret rotation
-
-- **JWT_SECRET**: Rotate with care; existing tokens will be invalidated. Use a long, random value (256+ bits).
-- **CREDENTIAL_ENCRYPTION_KEY**: Re-encrypt stored credentials after rotation. Never use the default value.
-- **Stripe keys**: Rotate via the Stripe dashboard; update environment variables immediately.
-- Store all secrets in a secrets manager (Azure Key Vault, AWS Secrets Manager, etc.).
+See [release-verification.md](release-verification.md) for release and deploy verification, and [deployment.md](deployment.md) for full deployment options.

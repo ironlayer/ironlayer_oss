@@ -53,3 +53,7 @@ warn_return_any = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=api --cov-report=term-missing"
+
+[tool.ruff.lint]
+# F821: undefined name — catches NameError issues like missing imports (BL-038).
+extend-select = ["F821"]

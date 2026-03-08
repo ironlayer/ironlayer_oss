@@ -92,7 +92,7 @@ jobs:
         run: uv sync --all-packages
 
       - name: Run unit tests
-        run: uv run --package ironlayer-core pytest core_engine/tests/unit/ -v --cov=core_engine --cov-report=term-missing --cov-fail-under=60
+        run: uv run --package ironlayer-core pytest core_engine/tests/unit/ -v --cov=core_engine --cov-report=term-missing --cov-fail-under=70
 
       - name: Run integration tests
         env:
@@ -119,7 +119,7 @@ jobs:
         run: uv sync --all-packages
 
       - name: Run tests
-        run: uv run --package ai-engine pytest ai_engine/tests/ -v --cov=ai_engine --cov-report=term-missing --cov-fail-under=60
+        run: uv run --package ai-engine pytest ai_engine/tests/ -v --cov=ai_engine --cov-report=term-missing --cov-fail-under=75
 
   # ---------------------------------------------------------------------------
   # Test: API
@@ -141,7 +141,7 @@ jobs:
         run: uv sync --all-packages
 
       - name: Run tests
-        run: uv run --package ironlayer-api pytest api/tests/ -v --cov=api --cov-report=term-missing --cov-fail-under=60
+        run: uv run --package ironlayer-api pytest api/tests/ -v --cov=api --cov-report=term-missing --cov-fail-under=75
 
   # ---------------------------------------------------------------------------
   # Test: CLI
@@ -299,6 +299,57 @@ jobs:
         run: uv run --package ironlayer-api pytest tests/integration/ -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # Validate Alembic migrations (BL-027)
+  # Runs upgrade head → downgrade -1 → upgrade head against a clean Postgres.
+  # Ensures every migration is reversible and idempotent before any build.
+  # ---------------------------------------------------------------------------
+  validate-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ironlayer_migrate_test
+          POSTGRES_USER: ironlayer
+          POSTGRES_PASSWORD: ironlayer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Upgrade to head
+        env:
+          ALEMBIC_DATABASE_URL: postgresql://ironlayer:ironlayer_test@localhost:5432/ironlayer_migrate_test
+        run: uv run --package ironlayer-core python -m alembic -c core_engine/state/migrations/alembic.ini upgrade head
+
+      - name: Downgrade one revision
+        env:
+          ALEMBIC_DATABASE_URL: postgresql://ironlayer:ironlayer_test@localhost:5432/ironlayer_migrate_test
+        run: uv run --package ironlayer-core python -m alembic -c core_engine/state/migrations/alembic.ini downgrade -1
+
+      - name: Re-upgrade to head (idempotency check)
+        env:
+          ALEMBIC_DATABASE_URL: postgresql://ironlayer:ironlayer_test@localhost:5432/ironlayer_migrate_test
+        run: uv run --package ironlayer-core python -m alembic -c core_engine/state/migrations/alembic.ini upgrade head
+
+  # ---------------------------------------------------------------------------
   # Security scanning (pip-audit, Trivy, Bandit)
   # ---------------------------------------------------------------------------
   security-scan:
@@ -355,7 +406,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-and-push:
     runs-on: ubuntu-latest
-    needs: [lint, test-core, test-ai, test-api, test-cli, test-frontend, test-integration, test-e2e, planner-determinism, security-scan]
+    needs: [lint, test-core, test-ai, test-api, test-cli, test-frontend, test-integration, test-e2e, planner-determinism, security-scan, validate-migrations]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       id-token: write
@@ -434,11 +485,56 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ---------------------------------------------------------------------------
+  # Trivy container image scan (BL-023)
+  # Scans each built Docker image for CRITICAL/HIGH CVEs before deploy.
+  # Runs only on main/tags (same condition as build-and-push).
+  # ---------------------------------------------------------------------------
+  trivy-image-scan:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+
+    strategy:
+      matrix:
+        image: [ironlayer-api, ironlayer-ai, ironlayer-frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name "${{ env.ACR_LOGIN_SERVER }}"
+
+      - name: Pull image
+        run: docker pull "${{ env.ACR_LOGIN_SERVER }}/${{ matrix.image }}:sha-${GITHUB_SHA::8}"
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: "${{ env.ACR_LOGIN_SERVER }}/${{ matrix.image }}:sha-${GITHUB_SHA::8}"
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+
+  # ---------------------------------------------------------------------------
   # Deploy to Azure Container Apps (release tags only)
   # ---------------------------------------------------------------------------
   deploy:
     runs-on: ubuntu-latest
-    needs: [build-and-push]
+    needs: [build-and-push, trivy-image-scan]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       id-token: write
@@ -472,75 +568,42 @@ jobs:
             --name ${{ vars.APP_PREFIX }}-migrate \
             --resource-group ${{ env.RESOURCE_GROUP }}
 
-      - name: Deploy API
-        run: |
-          az containerapp update \
-            --name ${{ vars.APP_PREFIX }}-api \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image "${{ env.ACR_LOGIN_SERVER }}/ironlayer-api:${{ steps.version.outputs.tag }}"
+      # Canary deploys — each call to canary_deploy.sh:
+      #   1. Enables multiple-revision mode (idempotent)
+      #   2. Records the current active revision
+      #   3. Deploys the new revision at 0% traffic
+      #   4. Waits for the new revision to reach Running state (up to 3 min)
+      #   5. Smoke-tests the canary directly via its revision FQDN
+      #   6. Shifts traffic progressively: 10% → 50% → 100% (1 min between shifts)
+      #   7. On any failure: restores 100% traffic to old revision and exits 1.
+      # Revision suffix uses the tag with dots → dashes (Azure CA name constraint).
 
-      - name: Deploy AI Engine
+      - name: Deploy API (canary)
         run: |
-          az containerapp update \
-            --name ${{ vars.APP_PREFIX }}-ai \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image "${{ env.ACR_LOGIN_SERVER }}/ironlayer-ai:${{ steps.version.outputs.tag }}"
+          SUFFIX="v$(echo '${{ steps.version.outputs.tag }}' | tr '.' '-')"
+          bash infra/scripts/canary_deploy.sh \
+            "${{ vars.APP_PREFIX }}-api" \
+            "${{ env.ACR_LOGIN_SERVER }}/ironlayer-api:${{ steps.version.outputs.tag }}" \
+            "/api/v1/health" \
+            "$SUFFIX"
 
-      - name: Deploy Frontend
+      - name: Deploy AI Engine (canary)
         run: |
-          az containerapp update \
-            --name ${{ vars.APP_PREFIX }}-frontend \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image "${{ env.ACR_LOGIN_SERVER }}/ironlayer-frontend:${{ steps.version.outputs.tag }}"
+          SUFFIX="v$(echo '${{ steps.version.outputs.tag }}' | tr '.' '-')"
+          bash infra/scripts/canary_deploy.sh \
+            "${{ vars.APP_PREFIX }}-ai" \
+            "${{ env.ACR_LOGIN_SERVER }}/ironlayer-ai:${{ steps.version.outputs.tag }}" \
+            "/health" \
+            "$SUFFIX"
 
-      - name: Verify deployments
+      - name: Deploy Frontend (canary)
         run: |
-          MAX_ATTEMPTS=12
-          SLEEP_INTERVAL=10
-          for APP in ${{ vars.APP_PREFIX }}-api ${{ vars.APP_PREFIX }}-ai ${{ vars.APP_PREFIX }}-frontend; do
-            echo "--- Waiting for ${APP} to become healthy ---"
-            for i in $(seq 1 $MAX_ATTEMPTS); do
-              STATUS=$(az containerapp show \
-                --name "${APP}" \
-                --resource-group "${{ env.RESOURCE_GROUP }}" \
-                --query "properties.runningStatus" \
-                --output tsv 2>/dev/null || echo "Unknown")
-              ACTIVE_REVISIONS=$(az containerapp revision list \
-                --name "${APP}" \
-                --resource-group "${{ env.RESOURCE_GROUP }}" \
-                --query "[?properties.active].name" \
-                --output tsv 2>/dev/null || echo "")
-              if [ -n "$ACTIVE_REVISIONS" ] && [ "$STATUS" = "Running" ]; then
-                echo "${APP} is healthy (attempt ${i}/${MAX_ATTEMPTS})"
-                break
-              fi
-              if [ "$i" = "$MAX_ATTEMPTS" ]; then
-                echo "ERROR: ${APP} did not become healthy after $((MAX_ATTEMPTS * SLEEP_INTERVAL))s"
-                az containerapp revision list \
-                  --name "${APP}" \
-                  --resource-group "${{ env.RESOURCE_GROUP }}" \
-                  --output table
-                exit 1
-              fi
-              echo "Attempt ${i}/${MAX_ATTEMPTS}: ${APP} status=${STATUS}, retrying in ${SLEEP_INTERVAL}s..."
-              sleep $SLEEP_INTERVAL
-            done
-          done
-
-      - name: Smoke test API health
-        run: |
-          API_URL="${{ vars.API_URL || '${{ vars.API_URL || 'https://api.ironlayer.app' }}' }}"
-          for i in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${API_URL}/api/v1/health" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "API health check passed (attempt ${i})"
-              exit 0
-            fi
-            echo "Attempt ${i}: got HTTP ${STATUS}, retrying in 10s..."
-            sleep 10
-          done
-          echo "API health check failed after 5 attempts"
-          exit 1
+          SUFFIX="v$(echo '${{ steps.version.outputs.tag }}' | tr '.' '-')"
+          bash infra/scripts/canary_deploy.sh \
+            "${{ vars.APP_PREFIX }}-frontend" \
+            "${{ env.ACR_LOGIN_SERVER }}/ironlayer-frontend:${{ steps.version.outputs.tag }}" \
+            "/" \
+            "$SUFFIX"
 
   # ---------------------------------------------------------------------------
   # Publish CLI wheel + OpenAPI spec (release tags only)
@@ -582,6 +645,16 @@ jobs:
               json.dump(spec, f, indent=2)
           "
 
+      - name: Generate SBOM
+        # Install cyclonedx-bom as an isolated uv tool (not into the workspace
+        # venv) so the tool itself does not appear in the SBOM it generates.
+        run: |
+          uv tool install cyclonedx-bom
+          cyclonedx-py environment --output-format JSON --outfile sbom.json
+
+      - name: Validate SBOM
+        run: uv tool run cyclonedx validate --input-format JSON --input-file sbom.json
+
       - name: Extract version
         id: version
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
@@ -596,3 +669,4 @@ jobs:
             cli/dist/*.whl
             cli/dist/*.tar.gz
             api/openapi.json
+            sbom.json

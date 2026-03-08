@@ -106,3 +106,15 @@ class AuditService:
             entity_id=entity_id,
             metadata=metadata,
         )
+
+    async def cleanup_old_logs(self, retention_days: int) -> int:
+        """Purge audit log entries older than retention_days for this tenant."""
+        deleted = await self._repo.cleanup_old_entries(retention_days)
+        await self._repo._session.commit()
+        return deleted
+
+    async def anonymize_user_data(self, user_id: str) -> int:
+        """GDPR right-to-erasure: anonymize all audit entries for a specific user."""
+        count = await self._repo.anonymize_user_entries(user_id)
+        await self._repo._session.commit()
+        return count

@@ -69,7 +69,7 @@ def _is_safe_sql(sql: str) -> bool:
             if stmt_type not in _SAFE_STATEMENT_TYPES:
                 return False
         return True
-    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError):
+    except Exception:
         return False
 
 

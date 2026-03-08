@@ -2,19 +2,6 @@
 
 The IronLayer CLI is invoked as `ironlayer`. All commands support `--help` for detailed usage.
 
-## Exit Codes
-
-Commands use a consistent exit code contract for scripting and CI:
-
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | Config or local error (e.g. missing dependency, auth failure, invalid args) |
-| `2` | Validation error (e.g. invalid input, schema violation) |
-| `3` | Server or network error (e.g. API unreachable, HTTP 4xx/5xx) |
-
-Where a command documents different codes (e.g. `ironlayer check` uses `1` for check failures), that command’s docs take precedence. Unhandled exceptions may produce non-zero exit codes; all commands are written to catch errors and exit with one of the above where possible.
-
 ## Global Options
 
 These options apply to every command:

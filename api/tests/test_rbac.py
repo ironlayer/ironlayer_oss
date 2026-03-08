@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from pydantic import SecretStr
 
 from api.config import APISettings
 from api.dependencies import get_ai_client, get_db_session, get_metering_collector, get_settings, get_tenant_session
@@ -203,8 +202,6 @@ def _test_settings() -> APISettings:
         ai_engine_timeout=5.0,
         platform_env="dev",
         cors_origins=["http://localhost:3000"],
-        allowed_repo_base="/",  # tests use /tmp/repo for plan generate
-        jwt_secret=SecretStr("test-secret-key-for-ironlayer-tests"),
     )
 
 
@@ -267,23 +264,6 @@ def rbac_app(
 
     def _override_metering():
         return mock_metering
-
-    # app.state for middleware / request-scoped deps (lifespan does not run under test client)
-    application.state.settings = _test_settings
-    application.state.ai_client = _mock_ai_client
-    application.state.metering = mock_metering
-    application.state.engine = None
-
-    class _MockSessionCM:
-        def __init__(self, session):
-            self._session = session
-        async def __aenter__(self):
-            return self._session
-        async def __aexit__(self, *args):
-            pass
-    _mock_sf = MagicMock()
-    _mock_sf.return_value = _MockSessionCM(_mock_session)
-    application.state.session_factory = _mock_sf
 
     application.dependency_overrides[get_db_session] = _override_session
     application.dependency_overrides[get_tenant_session] = _override_tenant_session

@@ -37,6 +37,7 @@ from core_engine.state.tables import (
     CustomerHealthTable,
     EnvironmentPromotionTable,
     EnvironmentTable,
+    EventOutboxTable,
     EventSubscriptionTable,
     InvoiceTable,
     LLMUsageLogTable,
@@ -882,6 +883,29 @@ class AuditRepository:
             checked += 1
 
         return (True, checked)
+
+    async def cleanup_old_entries(self, retention_days: int) -> int:
+        """Delete audit log entries older than retention_days. Returns count deleted."""
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        result = await self._session.execute(
+            delete(AuditLogTable)
+            .where(AuditLogTable.tenant_id == self._tenant_id)
+            .where(AuditLogTable.created_at < cutoff)
+        )
+        return result.rowcount
+
+    async def anonymize_user_entries(self, user_id: str) -> int:
+        """GDPR right-to-erasure: replace user PII in audit logs with [REDACTED].
+
+        Preserves audit counts and structure but removes identifying information.
+        """
+        result = await self._session.execute(
+            update(AuditLogTable)
+            .where(AuditLogTable.tenant_id == self._tenant_id)
+            .where(AuditLogTable.actor == user_id)
+            .values(actor="[REDACTED]", metadata_json=None)
+        )
+        return result.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -3719,3 +3743,99 @@ class InvoiceRepository:
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+
+class EventOutboxRepository:
+    """CRUD operations for the transactional event outbox.
+
+    Used by :meth:`EventBus.emit_persistent` to write events within the
+    caller's transaction, and by :class:`OutboxPoller` to poll and
+    mark entries delivered.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def write(
+        self,
+        tenant_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        correlation_id: str,
+    ) -> "EventOutboxTable":
+        """Insert a pending outbox entry within the current transaction.
+
+        The caller is responsible for committing the transaction.
+        """
+        from core_engine.state.tables import EventOutboxTable
+
+        row = EventOutboxTable(
+            tenant_id=tenant_id,
+            event_type=event_type,
+            payload=payload,
+            correlation_id=correlation_id,
+            status="pending",
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_pending(self, limit: int = 100) -> list["EventOutboxTable"]:
+        """Return pending entries ordered by ``created_at`` (oldest first)."""
+        from core_engine.state.tables import EventOutboxTable
+
+        stmt = (
+            select(EventOutboxTable)
+            .where(EventOutboxTable.status == "pending")
+            .order_by(EventOutboxTable.created_at.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def mark_delivered(self, entry_id: int) -> None:
+        """Mark an outbox entry as successfully delivered."""
+        from core_engine.state.tables import EventOutboxTable
+        from datetime import UTC, datetime
+
+        stmt = (
+            update(EventOutboxTable)
+            .where(EventOutboxTable.id == entry_id)
+            .values(status="delivered", delivered_at=datetime.now(UTC))
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+    async def mark_failed(self, entry_id: int, error: str) -> None:
+        """Increment attempt count and record the last error message."""
+        from core_engine.state.tables import EventOutboxTable
+
+        stmt = (
+            update(EventOutboxTable)
+            .where(EventOutboxTable.id == entry_id)
+            .values(
+                attempts=EventOutboxTable.attempts + 1,
+                last_error=error[:1024],
+            )
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+    async def cleanup_delivered(self, older_than_hours: int = 24) -> int:
+        """Remove delivered entries older than ``older_than_hours``.
+
+        Returns the number of rows deleted.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from core_engine.state.tables import EventOutboxTable
+
+        cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
+        stmt = delete(EventOutboxTable).where(
+            EventOutboxTable.status == "delivered",
+            EventOutboxTable.delivered_at.is_not(None),
+            EventOutboxTable.delivered_at < cutoff,
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.rowcount

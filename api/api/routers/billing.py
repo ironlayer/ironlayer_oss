@@ -10,7 +10,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, SettingsDep, TenantDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.schemas import (
     CheckoutSessionResponse,
@@ -362,7 +361,7 @@ async def get_invoice(
     service = InvoiceService(session, tenant_id, settings.invoice_storage_path)
     invoice = await service.get_invoice(invoice_id)
     if invoice is None:
-        raise not_found_404("Invoice", invoice_id)
+        raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found")
     return invoice
 
 
@@ -378,7 +377,7 @@ async def download_invoice_pdf(
     service = InvoiceService(session, tenant_id, settings.invoice_storage_path)
     pdf_bytes = await service.get_pdf(invoice_id)
     if pdf_bytes is None:
-        raise not_found_404("PDF for invoice", invoice_id)
+        raise HTTPException(status_code=404, detail=f"PDF not found for invoice '{invoice_id}'")
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",

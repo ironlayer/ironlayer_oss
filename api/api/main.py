@@ -17,12 +17,12 @@ from api.dependencies import (
     dispose_ai_client,
     dispose_engine,
     dispose_metering,
+    get_session_factory,
     init_ai_client,
     init_engine,
     init_metering,
 )
 from api.middleware.auth import AuthenticationMiddleware, LicenseMiddleware
-from api.middleware.body_limit import BodyLimitMiddleware
 from api.middleware.csp import ContentSecurityPolicyMiddleware
 from api.middleware.csrf import CSRFMiddleware
 from api.middleware.logging import RequestLoggingMiddleware
@@ -54,7 +54,6 @@ from api.routers import (
     webhooks,
 )
 from api.routers import metrics as metrics_router
-from api.services.auth_service import AuthError
 
 logger = logging.getLogger(__name__)
 
@@ -83,43 +82,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings: APISettings = load_api_settings()
 
     # Fail fast: refuse to start in production/staging without JWT_SECRET.
-    jwt_secret_val = settings.jwt_secret.get_secret_value() if settings.jwt_secret else ""
-    if settings.platform_env in (PlatformEnv.STAGING, PlatformEnv.PROD) and not jwt_secret_val:
+    if settings.platform_env in (PlatformEnv.STAGING, PlatformEnv.PRODUCTION) and not _os.environ.get("JWT_SECRET"):
         raise RuntimeError(
             f"JWT_SECRET environment variable is required in {settings.platform_env.value} mode. Refusing to start."
         )
 
-    # Fail fast: refuse to start in production/staging with default credential encryption key.
-    _cred_default = "ironlayer-dev-secret-change-in-production"
-    cred_key_val = settings.credential_encryption_key.get_secret_value()
-    if settings.platform_env in (PlatformEnv.STAGING, PlatformEnv.PROD) and cred_key_val == _cred_default:
-        raise RuntimeError(
-            "credential_encryption_key (or CREDENTIAL_ENCRYPTION_KEY) must be set to a non-default value in "
-            f"{settings.platform_env.value} mode. Refusing to start."
-        )
-
-    # Fail fast: if billing is enabled, require Stripe secrets.
-    if settings.billing_enabled:
-        stripe_key = settings.stripe_secret_key.get_secret_value()
-        if not (stripe_key and stripe_key.strip()):
-            raise RuntimeError(
-                "billing_enabled is True but stripe_secret_key is not set. "
-                "Set STRIPE_SECRET_KEY or disable billing. Refusing to start."
-            )
-        webhook_secret = settings.stripe_webhook_secret.get_secret_value()
-        if not (webhook_secret and webhook_secret.strip()):
-            raise RuntimeError(
-                "billing_enabled is True but stripe_webhook_secret is not set. "
-                "Set STRIPE_WEBHOOK_SECRET or disable billing. Refusing to start."
-            )
-
-    # Store settings on app.state for request-scoped dependencies.
-    app.state.settings = settings
-
-    # Database engine and session factory.
-    engine, session_factory = init_engine(settings)
-    app.state.engine = engine
-    app.state.session_factory = session_factory
+    # Database engine.
+    engine = init_engine(settings)
     is_local = settings.database_url.startswith("sqlite")
     logger.info(
         "Database engine initialised (%s, %s)",
@@ -139,20 +108,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # AI client.
-    ai_client = init_ai_client(settings)
-    app.state.ai_client = ai_client
+    init_ai_client(settings)
     logger.info("AI service client initialised (%s)", settings.ai_engine_url)
 
     # Metering collector.
-    metering = init_metering(session_factory)
-    app.state.metering = metering
+    init_metering(get_session_factory())
     logger.info("Metering collector initialised")
 
     # Token revocation checker.
     if settings.token_revocation_enabled:
         from api.middleware.auth import init_revocation_checker
 
-        init_revocation_checker(session_factory)
+        init_revocation_checker(get_session_factory())
         logger.info("Token revocation checker initialised")
 
     # License manager.
@@ -167,7 +134,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Event bus for lifecycle hooks and webhook dispatch.
     from api.services.event_bus import init_event_bus
 
-    event_bus = init_event_bus(session_factory=session_factory)
+    try:
+        sf = get_session_factory()
+    except RuntimeError:
+        sf = None
+    event_bus = init_event_bus(session_factory=sf)
     logger.info("Event bus initialised with %d handler(s)", event_bus.handler_count)
 
     # Structured JSON logging for SIEM integration.
@@ -186,9 +157,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # Shutdown.
-    dispose_metering(app.state.metering)
-    await dispose_ai_client(app.state.ai_client)
-    await dispose_engine(app.state.engine)
+    dispose_metering()
+    await dispose_ai_client()
+    await dispose_engine()
     logger.info("Application shutdown complete")
 
 
@@ -211,7 +182,6 @@ def create_app() -> FastAPI:
     # -- Middleware (outermost first) ----------------------------------------
 
     app.add_middleware(PrometheusMiddleware)
-    app.add_middleware(BodyLimitMiddleware, max_body_size=settings.max_request_body_size)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -275,10 +245,6 @@ def create_app() -> FastAPI:
     app.include_router(health.readiness_router)
 
     # -- Exception handlers --------------------------------------------------
-
-    @app.exception_handler(AuthError)
-    async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:

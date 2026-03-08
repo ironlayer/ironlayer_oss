@@ -1,12 +1,4 @@
-"""Configuration for the AI Advisory Engine.
-
-Platform environment: The AI engine reads ``PLATFORM_ENV`` (e.g. from the
-orchestrator) and uses string checks (e.g. \"development\", \"dev\", \"local\"
-for dev-like behavior). Valid values should match the rest of the platform:
-use ``dev``, ``staging``, or ``prod`` (or ``production`` where the API
-normalizes it). The AI engine does not depend on core_engine; it remains
-string-based for this setting.
-"""
+"""Configuration for the AI Advisory Engine."""
 
 from __future__ import annotations
 

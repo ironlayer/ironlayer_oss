@@ -346,29 +346,42 @@ class TestBackgroundFlush:
 
 
 class TestDependencyLifecycle:
-    """Verify get_metering_collector (from app.state) and dispose_metering(collector)."""
+    """Verify the init_metering / get_metering_collector / dispose_metering flow."""
 
-    def test_get_metering_requires_app_state(self) -> None:
-        """get_metering_collector(request) reads request.app.state.metering; missing state raises."""
-        from unittest.mock import MagicMock
-
+    def test_get_before_init_raises(self) -> None:
+        """get_metering_collector raises RuntimeError before init_metering."""
         import api.dependencies as deps
 
-        request = MagicMock()
-        request.app.state = type("State", (), {})()  # no metering attribute
-        with pytest.raises(AttributeError, match="metering"):
-            deps.get_metering_collector(request)
+        original = deps._metering_collector
+        try:
+            deps._metering_collector = None
+            with pytest.raises(RuntimeError, match="MeteringCollector has not been initialised"):
+                deps.get_metering_collector()
+        finally:
+            deps._metering_collector = original
 
-    def test_dispose_metering_calls_stop_flush(self) -> None:
-        """dispose_metering(collector) calls stop_background_flush on the collector."""
+    def test_dispose_clears_singleton(self) -> None:
+        """dispose_metering stops the background thread and clears the singleton."""
         import api.dependencies as deps
 
         mock_collector = MagicMock()
-        deps.dispose_metering(mock_collector)
-        mock_collector.stop_background_flush.assert_called_once()
+        original = deps._metering_collector
+        try:
+            deps._metering_collector = mock_collector
+            deps.dispose_metering()
+            mock_collector.stop_background_flush.assert_called_once()
+            assert deps._metering_collector is None
+        finally:
+            deps._metering_collector = original
 
-    def test_dispose_metering_none_is_noop(self) -> None:
-        """dispose_metering(None) does not raise."""
+    def test_dispose_when_none_is_noop(self) -> None:
+        """dispose_metering when already None doesn't raise."""
         import api.dependencies as deps
 
-        deps.dispose_metering(None)
+        original = deps._metering_collector
+        try:
+            deps._metering_collector = None
+            deps.dispose_metering()  # Should not raise
+            assert deps._metering_collector is None
+        finally:
+            deps._metering_collector = original

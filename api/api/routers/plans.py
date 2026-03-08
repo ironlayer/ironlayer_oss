@@ -23,8 +23,6 @@ from api.services.ai_feedback_service import AIFeedbackService
 from api.services.audit_service import AuditAction, AuditService
 from api.services.execution_service import ExecutionService
 from api.services.plan_service import PlanService
-from api.http_errors import not_found_404
-from api.validation import resolve_repo_path_under_base
 
 logger = logging.getLogger(__name__)
 
@@ -117,20 +115,10 @@ async def generate_plan(
     if not allowed:
         raise HTTPException(status_code=429, detail=reason)
 
-    # Validate repo_path under allowed base (same rule as plan_service).
-    try:
-        validated_repo_path = str(
-            resolve_repo_path_under_base(
-                body.repo_path, Path(settings.allowed_repo_base).resolve()
-            )
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     service = PlanService(session, ai_client, settings, tenant_id=tenant_id, metering=metering)
     try:
         plan = await service.generate_plan(
-            repo_path=validated_repo_path,
+            repo_path=body.repo_path,
             base_sha=body.base_sha,
             target_sha=body.target_sha,
         )
@@ -192,7 +180,7 @@ async def get_plan(
     service = PlanService(session, ai_client, settings, tenant_id=tenant_id)
     plan = await service.get_plan(plan_id)
     if plan is None:
-        raise not_found_404("Plan", plan_id)
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
     return plan
 
 
@@ -223,8 +211,8 @@ async def augment_plan(
     service = PlanService(session, ai_client, settings, tenant_id=tenant_id, metering=metering)
     try:
         return await service.generate_augmented_plan(plan_id)
-    except ValueError:
-        raise not_found_404("Plan", plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{plan_id}/apply", response_model=list[RunRecordResponse])
@@ -254,8 +242,8 @@ async def apply_plan(
             auto_approve=body.auto_approve,
             caller_role=caller_role,
         )
-    except ValueError:
-        raise not_found_404("Plan", plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RuntimeError as exc:

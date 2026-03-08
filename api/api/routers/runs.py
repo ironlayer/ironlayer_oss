@@ -9,7 +9,6 @@ from core_engine.state.repository import RunRepository, TelemetryRepository
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.dependencies import SessionDep, TenantDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 
 logger = logging.getLogger(__name__)
@@ -108,7 +107,7 @@ async def get_run(
     repo = RunRepository(session, tenant_id=tenant_id)
     row = await repo.get_by_id(run_id)
     if row is None:
-        raise not_found_404("Run", run_id)
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
     run_dict = _row_to_dict(row)
 

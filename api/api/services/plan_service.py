@@ -104,10 +104,14 @@ class PlanService:
         9. Persist the plan.
         10. Return the plan as a dictionary.
         """
-        from api.validation import resolve_repo_path_under_base
+        repo = Path(repo_path).resolve()
 
+        # Defense-in-depth: validate repo_path is under the allowed base.
+        # Uses is_relative_to() instead of string prefix to prevent bypass
+        # via paths like /workspace2/evil when base is /workspace.
         allowed_base = Path(self._settings.allowed_repo_base).resolve()
-        repo = resolve_repo_path_under_base(repo_path, allowed_base)
+        if not repo.is_relative_to(allowed_base):
+            raise ValueError(f"Repository path {repo} is outside the allowed base directory {allowed_base}")
 
         if not (repo / ".git").is_dir():
             raise ValueError(f"Not a valid git repository: {repo_path}")

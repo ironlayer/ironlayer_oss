@@ -182,5 +182,5 @@ Alternatively, set the `IRONLAYER_API_TOKEN` environment variable with an API ke
 
 - Read the [CLI Reference](cli-reference.md) for all commands and flags
 - See the [Architecture Guide](architecture.md) for how IronLayer works
-- Check `docker-compose.yml` and `infra/` for production deployment setup
+- Check the [Deployment Guide](deployment.md) for production setup (Azure Container Apps)
 - Explore the [API Reference](api-reference.md) for the REST API

@@ -13,9 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, TenantDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
-from api.services.test_service import PlanNotFoundError, TestService
+from api.services.test_service import TestService
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +74,7 @@ async def run_tests(
         return await service.run_tests_for_model(body.model_name)
 
     assert body.plan_id is not None
-    try:
-        return await service.run_tests_for_plan(body.plan_id)
-    except PlanNotFoundError as exc:
-        raise not_found_404("Plan", exc.plan_id) from exc
+    return await service.run_tests_for_plan(body.plan_id)
 
 
 @router.get("/results/{plan_id}")
@@ -94,10 +90,7 @@ async def get_plan_test_results(
     individual test results.
     """
     service = TestService(session, tenant_id=tenant_id)
-    try:
-        return await service.get_plan_test_results(plan_id)
-    except PlanNotFoundError as exc:
-        raise not_found_404("Plan", exc.plan_id) from exc
+    return await service.get_plan_test_results(plan_id)
 
 
 @router.get("/history/{model_name:path}")

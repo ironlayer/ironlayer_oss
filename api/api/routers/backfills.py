@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.dependencies import MeteringDep, SessionDep, SettingsDep, TenantDep, UserDep
-from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.audit_service import AuditAction, AuditService
 from api.services.execution_service import ExecutionService
@@ -253,8 +252,8 @@ async def get_backfill_status(
     service = ExecutionService(session, settings, tenant_id=tenant_id)
     try:
         return await service.get_backfill_status(backfill_id)
-    except ValueError:
-        raise not_found_404("Backfill", backfill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/history/{model_name}")
@@ -282,7 +281,7 @@ async def get_backfill(
     plan_repo = PlanRepository(session, tenant_id=tenant_id)
     plan_row = await plan_repo.get_plan(plan_id)
     if plan_row is None:
-        raise not_found_404("Backfill plan", plan_id)
+        raise HTTPException(status_code=404, detail=f"Backfill plan {plan_id} not found")
 
     plan_data = json.loads(plan_row.plan_json)  # type: ignore[arg-type]
 

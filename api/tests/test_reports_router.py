@@ -283,8 +283,7 @@ class TestExportEndpoint:
         )
 
         assert resp.status_code == 400
-        assert "Invalid request parameters" in resp.json()["detail"]
-        assert "report_type" in resp.json()["detail"]
+        assert "Invalid report_type" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_invalid_format(self, client: AsyncClient) -> None:
@@ -298,8 +297,7 @@ class TestExportEndpoint:
         )
 
         assert resp.status_code == 400
-        assert "Invalid request parameters" in resp.json()["detail"]
-        assert "format" in resp.json()["detail"]
+        assert "Invalid format" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_non_admin_forbidden(self, client: AsyncClient) -> None:

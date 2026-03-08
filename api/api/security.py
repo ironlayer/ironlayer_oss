@@ -236,7 +236,7 @@ class OIDCProvider:
                 data = json.loads(resp.read().decode("utf-8"))
         except PermissionError:
             raise  # Re-raise SSRF validation errors without wrapping
-        except Exception as exc:  # Intentional: wrap any I/O or JSON error into PermissionError
+        except Exception as exc:
             raise PermissionError(f"Failed to fetch OIDC discovery document from {discovery_url}: {exc}") from exc
 
         required_fields = {"issuer", "jwks_uri", "id_token_signing_alg_values_supported"}
