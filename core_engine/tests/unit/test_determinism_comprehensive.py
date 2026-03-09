@@ -11,26 +11,22 @@ Validates that:
 from __future__ import annotations
 
 import hashlib
-import json
-from datetime import date, timedelta
+from datetime import date
 
-import networkx as nx
 import pytest
-
 from core_engine.graph.dag_builder import build_dag
 from core_engine.models.diff import DiffResult
 from core_engine.models.model_definition import (
     ModelDefinition,
     ModelKind,
 )
-from core_engine.models.plan import Plan, RunType, compute_deterministic_id
+from core_engine.models.plan import compute_deterministic_id
 from core_engine.parser.normalizer import (
     NormalizationError,
     compute_canonical_hash,
     normalize_sql,
 )
 from core_engine.planner.interval_planner import (
-    PlannerConfig,
     generate_plan,
 )
 
@@ -132,7 +128,7 @@ class TestPlannerDeterminism:
 
         # Every step must match
         assert len(plan1.steps) == len(plan2.steps)
-        for s1, s2 in zip(plan1.steps, plan2.steps):
+        for s1, s2 in zip(plan1.steps, plan2.steps, strict=False):
             assert s1.step_id == s2.step_id
             assert s1.model == s2.model
             assert s1.run_type == s2.run_type

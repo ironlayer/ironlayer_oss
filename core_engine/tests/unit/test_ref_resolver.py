@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from core_engine.loader.ref_resolver import (
     UnresolvedRefError,
     build_model_registry,

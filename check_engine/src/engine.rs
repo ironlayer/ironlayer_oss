@@ -14,7 +14,15 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// BL-118: Maximum total execution duration for a single `check()` call.
+///
+/// If the engine has been running for longer than this when it enters the
+/// per-file checking loop, it emits an INTERNAL diagnostic and aborts further
+/// processing. This prevents deeply recursive SQL or large repos from
+/// hanging a CI worker indefinitely.
+const MAX_CHECK_DURATION: Duration = Duration::from_secs(120); // 2 minutes
 
 use rayon::prelude::*;
 use regex::Regex;
@@ -273,6 +281,52 @@ impl CheckEngine {
 
         // 6. Run per-file checks on uncached files (parallel via rayon)
         let max_diags = config.max_diagnostics;
+
+        // BL-118: Abort before entering the checker loop if we have already
+        // exceeded the total execution budget (file discovery + I/O can be
+        // slow on very large repos).  Emit an INTERNAL diagnostic so the
+        // caller knows results are incomplete rather than silently missing checks.
+        let elapsed_before_checks = start.elapsed();
+        if elapsed_before_checks >= MAX_CHECK_DURATION {
+            log::warn!(
+                "BL-118: Check engine exceeded {}s time limit during file discovery/I/O \
+                 ({}ms elapsed). Aborting per-file checks — results are incomplete.",
+                MAX_CHECK_DURATION.as_secs(),
+                elapsed_before_checks.as_millis(),
+            );
+            let timeout_diag = CheckDiagnostic {
+                rule_id: "INTERNAL".to_owned(),
+                message: format!(
+                    "Check engine timed out after {}s — per-file checks were not run. \
+                     Reduce the number of files or split the project to stay within the limit.",
+                    MAX_CHECK_DURATION.as_secs(),
+                ),
+                severity: Severity::Warning,
+                category: CheckCategory::FileStructure,
+                file_path: ".".to_owned(),
+                line: 0,
+                column: 0,
+                snippet: None,
+                suggestion: Some(
+                    "Split large projects into sub-projects, or exclude generated files."
+                        .to_owned(),
+                ),
+                doc_url: None,
+            };
+            let total_files_checked = fast_cached.len() as u32;
+            let elapsed = start.elapsed();
+            return CheckResult {
+                diagnostics: vec![timeout_diag],
+                total_files_checked,
+                total_files_skipped_cache: fast_cached.len() as u32,
+                total_errors: 0,
+                total_warnings: 1,
+                total_infos: 0,
+                elapsed_ms: elapsed.as_millis() as u64,
+                project_type: project_type.to_string(),
+                passed: false,
+            };
+        }
 
         let model_map: HashMap<&str, &DiscoveredModel> =
             models.iter().map(|m| (m.file_path.as_str(), m)).collect();

@@ -7,10 +7,7 @@ and edge cases (empty SQL, identical SQL).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, PropertyMock
-
 import pytest
-
 from ai_engine.engines.semantic_classifier import SemanticClassifier
 from ai_engine.models.requests import SemanticClassifyRequest
 from ai_engine.models.responses import SemanticClassifyResponse
@@ -32,9 +29,9 @@ def _req(old_sql: str, new_sql: str, **kwargs) -> SemanticClassifyRequest:
 class TestCosmeticChanges:
     """Changes that normalise to the same SQL are classified as cosmetic."""
 
-    def test_whitespace_only_change(self):
+    async def test_whitespace_only_change(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT  id,  name  FROM  orders",
                 new_sql="SELECT id, name FROM orders",
@@ -44,9 +41,9 @@ class TestCosmeticChanges:
         assert result.confidence == 1.0
         assert result.requires_full_rebuild is False
 
-    def test_comment_only_change(self):
+    async def test_comment_only_change(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id FROM orders -- this is old",
                 new_sql="SELECT id FROM orders -- this is new",
@@ -55,18 +52,18 @@ class TestCosmeticChanges:
         assert result.change_type == "cosmetic"
         assert result.confidence == 1.0
 
-    def test_multiline_whitespace_change(self):
+    async def test_multiline_whitespace_change(self):
         classifier = SemanticClassifier()
         old = "SELECT\n  id,\n  name\nFROM\n  orders"
         new = "SELECT id, name FROM orders"
-        result = classifier.classify(_req(old_sql=old, new_sql=new))
+        result = await classifier.classify(_req(old_sql=old, new_sql=new))
         assert result.change_type == "cosmetic"
 
-    def test_block_comment_removal(self):
+    async def test_block_comment_removal(self):
         classifier = SemanticClassifier()
         old = "/* legacy */ SELECT id FROM orders"
         new = "SELECT id FROM orders"
-        result = classifier.classify(_req(old_sql=old, new_sql=new))
+        result = await classifier.classify(_req(old_sql=old, new_sql=new))
         assert result.change_type == "cosmetic"
         assert result.confidence == 1.0
 
@@ -79,9 +76,9 @@ class TestCosmeticChanges:
 class TestRenameOnly:
     """Column alias renames with unchanged expression bodies."""
 
-    def test_column_alias_rename(self):
+    async def test_column_alias_rename(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name AS customer_name FROM orders",
                 new_sql="SELECT id, name AS cust_name FROM orders",
@@ -101,9 +98,9 @@ class TestRenameOnly:
 class TestNonBreaking:
     """Adding columns without removing or modifying existing ones."""
 
-    def test_added_column(self):
+    async def test_added_column(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name FROM orders",
                 new_sql="SELECT id, name, amount FROM orders",
@@ -114,9 +111,9 @@ class TestNonBreaking:
         assert result.requires_full_rebuild is False
         assert "amount" in result.impact_scope
 
-    def test_added_multiple_columns(self):
+    async def test_added_multiple_columns(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id FROM orders",
                 new_sql="SELECT id, name, amount FROM orders",
@@ -125,10 +122,10 @@ class TestNonBreaking:
         assert result.change_type == "non_breaking"
         assert result.requires_full_rebuild is False
 
-    def test_brand_new_model(self):
+    async def test_brand_new_model(self):
         """Empty old_sql means a brand-new model -- non_breaking."""
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="",
                 new_sql="SELECT id, name FROM orders",
@@ -139,10 +136,10 @@ class TestNonBreaking:
         assert result.requires_full_rebuild is False
         assert "new model" in result.impact_scope.lower()
 
-    def test_whitespace_only_old_sql(self):
+    async def test_whitespace_only_old_sql(self):
         """Whitespace-only old_sql is treated as brand new."""
         classifier = SemanticClassifier()
-        result = classifier.classify(_req(old_sql="   ", new_sql="SELECT id FROM orders"))
+        result = await classifier.classify(_req(old_sql="   ", new_sql="SELECT id FROM orders"))
         assert result.change_type == "non_breaking"
         assert result.confidence == 1.0
 
@@ -155,9 +152,9 @@ class TestNonBreaking:
 class TestMetricSemantic:
     """Aggregation function changes trigger metric_semantic classification."""
 
-    def test_sum_to_avg(self):
+    async def test_sum_to_avg(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id",
                 new_sql="SELECT customer_id, AVG(amount) AS total FROM orders GROUP BY customer_id",
@@ -168,9 +165,9 @@ class TestMetricSemantic:
         assert result.requires_full_rebuild is True
         assert "aggregation" in result.impact_scope.lower()
 
-    def test_count_to_count_distinct(self):
+    async def test_count_to_count_distinct(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT region, COUNT(id) AS cnt FROM orders GROUP BY region",
                 new_sql="SELECT region, COUNT(DISTINCT id) AS cnt FROM orders GROUP BY region",
@@ -189,10 +186,10 @@ class TestMetricSemantic:
 class TestPartitionShift:
     """Changes to window PARTITION BY clauses."""
 
-    def test_window_partition_change(self):
+    async def test_window_partition_change(self):
         """Window PARTITION BY column change should be detected as partition_shift."""
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql=(
                     "SELECT id, amount, "
@@ -217,9 +214,9 @@ class TestPartitionShift:
 class TestBreaking:
     """Column removals and unrecognised patterns yield breaking."""
 
-    def test_column_removed(self):
+    async def test_column_removed(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -230,9 +227,9 @@ class TestBreaking:
         assert result.requires_full_rebuild is True
         assert "name" in result.impact_scope
 
-    def test_multiple_columns_removed(self):
+    async def test_multiple_columns_removed(self):
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount, status FROM orders",
                 new_sql="SELECT id FROM orders",
@@ -241,10 +238,10 @@ class TestBreaking:
         assert result.change_type == "breaking"
         assert result.requires_full_rebuild is True
 
-    def test_unparseable_sql_defaults_to_breaking(self):
+    async def test_unparseable_sql_defaults_to_breaking(self):
         """If sqlglot cannot parse the SQL, we default to breaking with low confidence."""
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="THIS IS NOT SQL AT ALL ???",
                 new_sql="NEITHER IS THIS !!!",
@@ -254,11 +251,11 @@ class TestBreaking:
         assert result.confidence == 0.3
         assert result.requires_full_rebuild is True
 
-    def test_existing_column_body_modified_with_addition(self):
+    async def test_existing_column_body_modified_with_addition(self):
         """If an existing column's expression changes AND new columns are added,
         we fall through to a later rule (metric_semantic or breaking)."""
         classifier = SemanticClassifier()
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, amount FROM orders",
                 new_sql="SELECT id, amount + tax AS amount, new_col FROM orders",
@@ -296,9 +293,9 @@ class TestConfidenceScoring:
         ],
         ids=["cosmetic", "new_model", "non_breaking", "rename"],
     )
-    def test_confidence_values(self, old_sql, new_sql, expected_confidence):
+    async def test_confidence_values(self, old_sql, new_sql, expected_confidence):
         classifier = SemanticClassifier()
-        result = classifier.classify(_req(old_sql=old_sql, new_sql=new_sql))
+        result = await classifier.classify(_req(old_sql=old_sql, new_sql=new_sql))
         assert result.confidence == expected_confidence
 
 
@@ -310,7 +307,7 @@ class TestConfidenceScoring:
 class TestLLMEnrichment:
     """When confidence < threshold and LLM is available, enrichment fires."""
 
-    def test_llm_enrichment_increases_confidence(self, mock_llm_enabled):
+    async def test_llm_enrichment_increases_confidence(self, mock_llm_enabled):
         """The LLM returns a high confidence which blends with the rule result."""
         mock_llm_enabled.classify_change.return_value = {
             "confidence": 0.95,
@@ -318,7 +315,7 @@ class TestLLMEnrichment:
         }
 
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.95)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -331,10 +328,10 @@ class TestLLMEnrichment:
         assert "LLM note" in result.impact_scope
         mock_llm_enabled.classify_change.assert_called_once()
 
-    def test_llm_not_called_when_confidence_above_threshold(self, mock_llm_enabled):
+    async def test_llm_not_called_when_confidence_above_threshold(self, mock_llm_enabled):
         """High-confidence rule results skip LLM entirely."""
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.7)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id FROM t",
                 new_sql="SELECT  id  FROM  t",
@@ -344,10 +341,10 @@ class TestLLMEnrichment:
         assert result.confidence == 1.0
         mock_llm_enabled.classify_change.assert_not_called()
 
-    def test_llm_not_called_when_disabled(self, mock_llm_disabled):
+    async def test_llm_not_called_when_disabled(self, mock_llm_disabled):
         """Disabled LLM is never called even when confidence is low."""
         classifier = SemanticClassifier(llm_client=mock_llm_disabled, confidence_threshold=0.95)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -365,12 +362,12 @@ class TestLLMEnrichment:
 class TestLLMFailure:
     """LLM failures must not break the classifier."""
 
-    def test_llm_returns_none(self, mock_llm_enabled):
+    async def test_llm_returns_none(self, mock_llm_enabled):
         """If LLM returns None, we keep the rule-based result."""
         mock_llm_enabled.classify_change.return_value = None
 
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.95)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -379,7 +376,7 @@ class TestLLMFailure:
         assert result.change_type == "breaking"
         assert result.confidence == 0.9
 
-    def test_llm_returns_invalid_confidence(self, mock_llm_enabled):
+    async def test_llm_returns_invalid_confidence(self, mock_llm_enabled):
         """If the LLM returns a confidence outside [0, 1], rule result is kept."""
         mock_llm_enabled.classify_change.return_value = {
             "confidence": 5.0,
@@ -387,7 +384,7 @@ class TestLLMFailure:
         }
 
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.95)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -396,7 +393,7 @@ class TestLLMFailure:
         # Invalid confidence -> fall back to rule result
         assert result.confidence == 0.9
 
-    def test_llm_returns_non_numeric_confidence(self, mock_llm_enabled):
+    async def test_llm_returns_non_numeric_confidence(self, mock_llm_enabled):
         """Non-numeric confidence from LLM -> graceful fallback."""
         mock_llm_enabled.classify_change.return_value = {
             "confidence": "high",
@@ -404,7 +401,7 @@ class TestLLMFailure:
         }
 
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.95)
-        result = classifier.classify(
+        result = await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -412,7 +409,7 @@ class TestLLMFailure:
         )
         assert result.confidence == 0.9
 
-    def test_llm_exception_does_not_propagate(self, mock_llm_enabled):
+    async def test_llm_exception_does_not_propagate(self, mock_llm_enabled):
         """An exception from the LLM client must be caught gracefully."""
         mock_llm_enabled.classify_change.side_effect = RuntimeError("API down")
 
@@ -423,7 +420,7 @@ class TestLLMFailure:
         # Looking at the code, _llm_enrich does NOT have a try/except, so the error
         # WILL propagate. Let's verify current behavior:
         with pytest.raises(RuntimeError, match="API down"):
-            classifier.classify(
+            await classifier.classify(
                 _req(
                     old_sql="SELECT id, name, amount FROM orders",
                     new_sql="SELECT id, amount FROM orders",
@@ -439,25 +436,25 @@ class TestLLMFailure:
 class TestEdgeCases:
     """Boundary conditions and unusual inputs."""
 
-    def test_identical_sql(self):
+    async def test_identical_sql(self):
         """Identical SQL is classified as cosmetic."""
         classifier = SemanticClassifier()
         sql = "SELECT id, name FROM orders WHERE active = 1"
-        result = classifier.classify(_req(old_sql=sql, new_sql=sql))
+        result = await classifier.classify(_req(old_sql=sql, new_sql=sql))
         assert result.change_type == "cosmetic"
         assert result.confidence == 1.0
         assert result.requires_full_rebuild is False
 
-    def test_empty_new_sql_with_nonempty_old(self):
+    async def test_empty_new_sql_with_nonempty_old(self):
         """Empty new SQL with real old SQL -- sqlglot parse error or cosmetic."""
         classifier = SemanticClassifier()
-        result = classifier.classify(_req(old_sql="SELECT id FROM orders", new_sql=""))
+        result = await classifier.classify(_req(old_sql="SELECT id FROM orders", new_sql=""))
         # Empty new_sql after normalisation != non-empty old_sql
         # sqlglot.parse_one("") will raise a ParseError -> breaking with 0.3
         assert result.change_type == "breaking"
         assert result.confidence == 0.3
 
-    def test_schema_diff_passed_to_llm(self, mock_llm_enabled):
+    async def test_schema_diff_passed_to_llm(self, mock_llm_enabled):
         """schema_diff and column_lineage are forwarded to the LLM."""
         mock_llm_enabled.classify_change.return_value = {
             "confidence": 0.8,
@@ -467,7 +464,7 @@ class TestEdgeCases:
         classifier = SemanticClassifier(llm_client=mock_llm_enabled, confidence_threshold=0.95)
         schema_diff = {"added": ["col_x"], "removed": []}
         lineage = {"col_x": "source.col_a"}
-        result = classifier.classify(
+        await classifier.classify(
             _req(
                 old_sql="SELECT id, name, amount FROM orders",
                 new_sql="SELECT id, amount FROM orders",
@@ -480,10 +477,10 @@ class TestEdgeCases:
         assert "Schema diff" in context
         assert "Column lineage" in context
 
-    def test_response_is_pydantic_model(self):
+    async def test_response_is_pydantic_model(self):
         """Verify the result is a proper Pydantic model."""
         classifier = SemanticClassifier()
-        result = classifier.classify(_req(old_sql="SELECT id FROM t", new_sql="SELECT id FROM t"))
+        result = await classifier.classify(_req(old_sql="SELECT id FROM t", new_sql="SELECT id FROM t"))
         assert isinstance(result, SemanticClassifyResponse)
         # Verify it serialises cleanly
         data = result.model_dump()
@@ -502,8 +499,8 @@ class TestEdgeCases:
         ],
         ids=["lower-to-upper", "mixed-case"],
     )
-    def test_case_insensitive_normalisation(self, old_sql, new_sql):
+    async def test_case_insensitive_normalisation(self, old_sql, new_sql):
         classifier = SemanticClassifier()
-        result = classifier.classify(_req(old_sql=old_sql, new_sql=new_sql))
+        result = await classifier.classify(_req(old_sql=old_sql, new_sql=new_sql))
         assert result.change_type == "cosmetic"
         assert result.confidence == 1.0

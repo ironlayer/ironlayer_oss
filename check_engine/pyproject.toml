@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ironlayer-check-engine"
+version = "0.3.0"
+description = "Rust-powered validation engine for IronLayer — 90 rules across 12 categories"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "License :: OSI Approved :: Apache Software License",
+]
+
+[tool.maturin]
+# Build the PyO3 cdylib extension-module (no Python package bundled).
+# Requires Rust 1.75+ and pyo3 "abi3-py311" feature (stable ABI).
+features = ["pyo3/extension-module"]
+module-name = "ironlayer_check_engine"

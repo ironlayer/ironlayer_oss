@@ -85,5 +85,5 @@ rollback:
 sync-rules:
 	cp $(INFRA_DIR)/CLAUDE.md $(OSS_DIR)/CLAUDE.md
 	cp $(INFRA_DIR)/AGENTS.md $(OSS_DIR)/AGENTS.md
-	@echo "Rules synced: ironlayer_infra → ironlayer_OSS"
+	@echo "Rules synced: infra → OSS"
 	@echo "Review 'git diff' in ironlayer_OSS before committing."

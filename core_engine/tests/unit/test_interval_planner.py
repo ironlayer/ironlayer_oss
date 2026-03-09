@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-
 from core_engine.graph.dag_builder import build_dag
 from core_engine.models.diff import DiffResult
 from core_engine.models.model_definition import (
@@ -37,7 +36,7 @@ def _model(
         name=name,
         kind=kind,
         file_path=f"models/{name}.sql",
-        raw_sql=f"SELECT 1",
+        raw_sql="SELECT 1",
         referenced_tables=referenced_tables or [],
         dependencies=dependencies or [],
         time_column=time_column,
@@ -359,7 +358,7 @@ class TestDeterminism:
 
         assert plan1.plan_id == plan2.plan_id
         assert len(plan1.steps) == len(plan2.steps)
-        for s1, s2 in zip(plan1.steps, plan2.steps):
+        for s1, s2 in zip(plan1.steps, plan2.steps, strict=False):
             assert s1.step_id == s2.step_id
             assert s1.model == s2.model
             assert s1.run_type == s2.run_type

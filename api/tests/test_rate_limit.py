@@ -149,7 +149,9 @@ async def test_requests_exceeding_limit(client: AsyncClient) -> None:
     resp = await client.get("/api/v1/test")
     assert resp.status_code == 429
     body = resp.json()
-    assert "retry_after" in body
+    # BL-082: retry_after removed from JSON body to prevent timing reconnaissance;
+    # the standard Retry-After header is the authoritative value.
+    assert "retry_after" not in body
     assert "Retry-After" in resp.headers
 
 
@@ -219,7 +221,7 @@ async def test_sliding_window_resets() -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # Use a patched window to avoid waiting 60 seconds.
         # We manipulate time.monotonic to simulate window expiry.
-        base_time = time.monotonic()
+        time.monotonic()
         call_count = 0
 
         original_monotonic = time.monotonic
@@ -338,5 +340,7 @@ async def test_429_response_body() -> None:
         assert resp.status_code == 429
         body = resp.json()
         assert body["detail"] == "Rate limit exceeded. Try again later."
-        assert isinstance(body["retry_after"], int)
-        assert body["retry_after"] >= 1
+        # BL-082: retry_after removed from JSON body to prevent timing reconnaissance.
+        assert "retry_after" not in body
+        assert "Retry-After" in resp.headers
+        assert int(resp.headers["Retry-After"]) >= 1

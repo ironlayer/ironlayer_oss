@@ -1,7 +1,7 @@
 """Edge-case and gap-filling tests for the CLI package.
 
 Covers areas not addressed by the primary test files:
-  - ``_emit_metrics`` OSError suppression (lines 117-120)
+  - ``emit_metrics`` OSError suppression (lines 117-120)
   - ``__main__.py`` entry point
   - ``_load_model_sql_map`` helper
   - ``from-sql`` materialization fallbacks (INSERT_OVERWRITE, MERGE)
@@ -16,24 +16,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from click.exceptions import Exit as ClickExit
-from typer.testing import CliRunner
-
+from cli.app import app
+from cli.commands.migrate import _extract_sql_table_refs, _generate_ironlayer_file
+from cli.state import emit_metrics, set_global_options
 from core_engine.models.model_definition import (
     Materialization,
     ModelDefinition,
     ModelKind,
 )
-
-from cli.app import (
-    _emit_metrics,
-    _extract_sql_table_refs,
-    _generate_ironlayer_file,
-    app,
-)
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -55,19 +49,18 @@ def _make_model(
 
 
 # ---------------------------------------------------------------------------
-# _emit_metrics edge cases
+# emit_metrics edge cases
 # ---------------------------------------------------------------------------
 
 
 class TestEmitMetrics:
-    """Verify _emit_metrics never crashes the CLI."""
+    """Verify emit_metrics never crashes the CLI."""
 
     def test_emit_metrics_writes_to_file(self, tmp_path):
         """Normal operation writes a JSON line to the metrics file."""
         metrics_file = tmp_path / "metrics.jsonl"
-
-        with patch("cli.app._metrics_file", metrics_file):
-            _emit_metrics("test.event", {"key": "value"})
+        set_global_options(json_output=False, metrics_file=metrics_file, env="dev")
+        emit_metrics("test.event", {"key": "value"})
 
         lines = metrics_file.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
@@ -78,14 +71,10 @@ class TestEmitMetrics:
 
     def test_emit_metrics_suppresses_os_error(self, tmp_path):
         """OSError (e.g. read-only filesystem) should be silently suppressed."""
-        # Point metrics at a path under a non-existent directory that
-        # we ensure can't be created.
         bad_path = tmp_path / "readonly" / "metrics.jsonl"
-        # Don't create the parent directory.
-
-        with patch("cli.app._metrics_file", bad_path):
-            # Should NOT raise.
-            _emit_metrics("test.event", {"safe": True})
+        set_global_options(json_output=False, metrics_file=bad_path, env="dev")
+        # Should NOT raise.
+        emit_metrics("test.event", {"safe": True})
 
         # Verify no file was written.
         assert not bad_path.exists()
@@ -93,12 +82,10 @@ class TestEmitMetrics:
     def test_emit_metrics_suppresses_permission_error(self, tmp_path):
         """PermissionError (a subclass of OSError) should be suppressed."""
         metrics_file = tmp_path / "metrics.jsonl"
-
-        # Create a mock that raises PermissionError on open.
-        with patch("cli.app._metrics_file", metrics_file):
-            with patch.object(Path, "open", side_effect=PermissionError("no write")):
-                # Should NOT raise.
-                _emit_metrics("test.event", {"safe": True})
+        set_global_options(json_output=False, metrics_file=metrics_file, env="dev")
+        with patch.object(Path, "open", side_effect=PermissionError("no write")):
+            # Should NOT raise.
+            emit_metrics("test.event", {"safe": True})
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +123,7 @@ class TestLoadModelSqlMap:
 
     def test_loads_from_models_subdir(self, tmp_path):
         """When a 'models/' subdir exists, loads from there."""
-        from cli.app import _load_model_sql_map
+        from cli.helpers import load_model_sql_map
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -146,14 +133,14 @@ class TestLoadModelSqlMap:
             encoding="utf-8",
         )
 
-        result = _load_model_sql_map(tmp_path)
+        result = load_model_sql_map(tmp_path)
         assert isinstance(result, dict)
         # At minimum should have found the model.
         assert len(result) >= 1
 
     def test_falls_back_to_repo_root(self, tmp_path):
         """When no 'models/' subdir, loads from repo root."""
-        from cli.app import _load_model_sql_map
+        from cli.helpers import load_model_sql_map
 
         sql_file = tmp_path / "my_model.sql"
         sql_file.write_text(
@@ -161,14 +148,14 @@ class TestLoadModelSqlMap:
             encoding="utf-8",
         )
 
-        result = _load_model_sql_map(tmp_path)
+        result = load_model_sql_map(tmp_path)
         assert isinstance(result, dict)
 
     def test_empty_directory_returns_empty(self, tmp_path):
         """An empty directory should return an empty map."""
-        from cli.app import _load_model_sql_map
+        from cli.helpers import load_model_sql_map
 
-        result = _load_model_sql_map(tmp_path)
+        result = load_model_sql_map(tmp_path)
         assert result == {}
 
 
@@ -419,74 +406,57 @@ class TestExtractSqlTableRefsEdge:
 
 
 class TestLoadDotenv:
-    """Cover edge cases in _load_dotenv from commands/dev.py."""
+    """Cover edge cases in .env loading via python-dotenv (used by dev command)."""
 
     def test_skips_lines_without_equals(self, tmp_path):
-        from cli.commands.dev import _load_dotenv
+        from dotenv import load_dotenv
 
         env_file = tmp_path / ".env"
         env_file.write_text(
             "# Comment\nGOOD_KEY=good_value\nBAD_LINE_NO_EQUALS\nANOTHER_KEY=123\n",
             encoding="utf-8",
         )
-
-        # Clear any existing env vars to avoid interference.
         for key in ("GOOD_KEY", "BAD_LINE_NO_EQUALS", "ANOTHER_KEY"):
             os.environ.pop(key, None)
-
-        _load_dotenv(env_file)
-
+        load_dotenv(env_file, override=False)
         assert os.environ.get("GOOD_KEY") == "good_value"
         assert os.environ.get("ANOTHER_KEY") == "123"
-        # The line without '=' should be silently skipped.
         assert "BAD_LINE_NO_EQUALS" not in os.environ
-
-        # Clean up.
         os.environ.pop("GOOD_KEY", None)
         os.environ.pop("ANOTHER_KEY", None)
 
-    def test_os_error_returns_silently(self, tmp_path):
-        from cli.commands.dev import _load_dotenv
+    def test_nonexistent_file_no_raise(self, tmp_path):
+        from dotenv import load_dotenv
 
-        # Use a directory as the file path to trigger OSError on read.
-        dir_path = tmp_path / "fake_env"
-        dir_path.mkdir()
-        # Should not raise.
-        _load_dotenv(dir_path)
+        # Loading a nonexistent file should not raise.
+        load_dotenv(tmp_path / "does_not_exist", override=False)
 
     def test_strips_quotes_from_values(self, tmp_path):
-        from cli.commands.dev import _load_dotenv
+        from dotenv import load_dotenv
 
         env_file = tmp_path / ".env"
         env_file.write_text(
             "SINGLE='hello'\nDOUBLE=\"world\"\n",
             encoding="utf-8",
         )
-
         for key in ("SINGLE", "DOUBLE"):
             os.environ.pop(key, None)
-
-        _load_dotenv(env_file)
-
+        load_dotenv(env_file, override=False)
         assert os.environ.get("SINGLE") == "hello"
         assert os.environ.get("DOUBLE") == "world"
-
         os.environ.pop("SINGLE", None)
         os.environ.pop("DOUBLE", None)
 
     def test_empty_lines_and_comments_skipped(self, tmp_path):
-        from cli.commands.dev import _load_dotenv
+        from dotenv import load_dotenv
 
         env_file = tmp_path / ".env"
         env_file.write_text(
             "\n  \n# This is a comment\n  # Another comment\nKEY=val\n",
             encoding="utf-8",
         )
-
         os.environ.pop("KEY", None)
-
-        _load_dotenv(env_file)
-
+        load_dotenv(env_file, override=False)
         assert os.environ.get("KEY") == "val"
         os.environ.pop("KEY", None)
 
@@ -712,7 +682,7 @@ class TestFromSqlGenericException:
         (sql_dir / "model.sql").write_text("SELECT 1", encoding="utf-8")
 
         with patch(
-            "cli.app._generate_ironlayer_file",
+            "cli.commands.migrate._generate_ironlayer_file",
             side_effect=RuntimeError("disk exploded"),
         ):
             result = runner.invoke(

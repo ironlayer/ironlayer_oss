@@ -325,7 +325,6 @@ class TestMissingRoleClaim:
         request.state.sub = "user@example.com"
         # Make getattr(request.state, "role", None) return None
         # by ensuring 'role' attribute doesn't exist
-        del_attrs = set()
         original_getattr = type(request.state).__getattribute__
 
         def custom_getattr(self, name):

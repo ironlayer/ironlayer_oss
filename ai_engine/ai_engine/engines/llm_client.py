@@ -9,15 +9,22 @@ See :mod:`ai_engine.engines.pii_scrubber` for the scrubbing rules.
 
 This module is a leaf dependency -- no other engine module imports it at
 module level so that the ``anthropic`` package remains optional.
+
+The client is **fully async** and uses the ``anthropic.AsyncAnthropic`` SDK.
+All public methods are coroutines that must be awaited.  Callers in a sync
+context (e.g. tests) should use ``asyncio.run()``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time as _time
 from typing import TYPE_CHECKING, Any
 
-from ai_engine.engines.budget_guard import BudgetExceededError, BudgetGuard
+from pydantic import BaseModel, ValidationError
+
+from ai_engine.engines.budget_guard import BudgetExceededError, BudgetGuard, LLMUsage
 from ai_engine.engines.pii_scrubber import (
     contains_pii,
     scrub_for_llm,
@@ -35,8 +42,35 @@ class LLMDisabledError(Exception):
     """Raised when an LLM call is attempted but the feature is disabled."""
 
 
+# ---------------------------------------------------------------------------
+# Output schema models (BL-050)
+# ---------------------------------------------------------------------------
+# These Pydantic models validate the JSON structures the LLM is expected to
+# return.  Any response that does not conform to the schema is rejected and
+# the caller receives ``None`` (same as any other LLM failure).  This
+# prevents malformed or adversarially crafted LLM outputs from propagating
+# into downstream processing as untyped dicts.
+
+
+class _ClassifyChangeOutput(BaseModel):
+    """Expected shape of the ``classify_change`` LLM response."""
+
+    change_type: str
+    confidence: float
+    reasoning: str
+
+
+class _OptimizationSuggestion(BaseModel):
+    """Expected shape of a single ``suggest_optimization`` LLM item."""
+
+    suggestion_type: str
+    description: str
+    rewritten_sql: str | None = None
+    confidence: float
+
+
 class LLMClient:
-    """Thin wrapper around the Anthropic SDK with fail-safe semantics.
+    """Thin async wrapper around the Anthropic SDK with fail-safe semantics.
 
     Supports two modes of operation:
 
@@ -44,9 +78,22 @@ class LLMClient:
        ``AI_ENGINE_LLM_API_KEY``.  Used as a fallback or for
        demo/trial tenants.
     2. **Per-tenant key**: Callers pass ``api_key`` on each request.
-       The client creates a short-lived Anthropic client for that call
-       and disposes it immediately.  This lets each tenant bring their
+       The client creates a short-lived ``AsyncAnthropic`` client for that
+       call and disposes it immediately.  This lets each tenant bring their
        own LLM API key without sharing credentials across tenants.
+
+    All public methods are **async coroutines** that must be awaited.
+    The async Anthropic SDK is used so that LLM I/O never blocks the
+    FastAPI event loop.
+
+    Budget enforcement is optional.  When a :class:`BudgetGuard` is
+    supplied, :meth:`_call_llm` checks the budget *before* the call and
+    records actual usage *after*.  The check and record are intentionally
+    not held under the guard's lock during the LLM call itself: this keeps
+    per-tenant concurrency high while still catching budget overruns in
+    normal traffic patterns.  (Holding the lock for the full LLM call
+    duration -- which can be several seconds -- would serialize all
+    concurrent requests unnecessarily.)
     """
 
     def __init__(
@@ -68,7 +115,7 @@ class LLMClient:
 
                 api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
                 if api_key:
-                    self._client = anthropic.Anthropic(
+                    self._client = anthropic.AsyncAnthropic(
                         api_key=api_key,
                         timeout=self._timeout,
                     )
@@ -84,7 +131,7 @@ class LLMClient:
                     )
             except Exception:
                 logger.warning(
-                    "Failed to initialise Anthropic client -- LLM features disabled",
+                    "Failed to initialise Anthropic async client -- LLM features disabled",
                     exc_info=True,
                 )
                 self._enabled = False
@@ -98,7 +145,7 @@ class LLMClient:
     def enabled(self) -> bool:
         return self._enabled
 
-    def classify_change(
+    async def classify_change(
         self,
         old_sql: str,
         new_sql: str,
@@ -118,8 +165,8 @@ class LLMClient:
             Per-request override.  When ``False`` the call is skipped even
             if the global LLM flag is on (used for per-tenant opt-out).
         api_key:
-            Per-tenant API key.  If provided, a temporary Anthropic client
-            is created for this call.  Falls back to the platform key.
+            Per-tenant API key.  If provided, a temporary AsyncAnthropic
+            client is created for this call.  Falls back to the platform key.
         """
         if not self._enabled or not llm_enabled:
             return None
@@ -136,16 +183,24 @@ class LLMClient:
             user += f"\n\nADDITIONAL CONTEXT:\n{scrubbed_ctx}"
 
         try:
-            raw = self._call_llm(prompt.content, user, api_key=api_key, call_type="classify_change")
-            return self._parse_json(raw)
+            raw = await self._call_llm(
+                prompt.content, user, api_key=api_key, call_type="classify_change"
+            )
+            parsed = self._parse_json(raw)
+            # Validate the response conforms to the expected schema (BL-050).
+            validated = _ClassifyChangeOutput.model_validate(parsed)
+            return validated.model_dump()
         except BudgetExceededError:
             logger.warning("LLM classify_change blocked by budget guard")
+            return None
+        except ValidationError as exc:
+            logger.warning("LLM classify_change returned invalid schema: %s", exc)
             return None
         except Exception:
             logger.warning("LLM classify_change failed", exc_info=True)
             return None
 
-    def suggest_optimization(
+    async def suggest_optimization(
         self,
         sql: str,
         context: str = "",
@@ -164,8 +219,8 @@ class LLMClient:
             Per-request override.  When ``False`` the call is skipped even
             if the global LLM flag is on (used for per-tenant opt-out).
         api_key:
-            Per-tenant API key.  If provided, a temporary Anthropic client
-            is created for this call.  Falls back to the platform key.
+            Per-tenant API key.  If provided, a temporary AsyncAnthropic
+            client is created for this call.  Falls back to the platform key.
         """
         if not self._enabled or not llm_enabled:
             return None
@@ -181,11 +236,25 @@ class LLMClient:
             user += f"\n\nCONTEXT:\n{scrubbed_ctx}"
 
         try:
-            raw = self._call_llm(prompt.content, user, api_key=api_key, call_type="suggest_optimization")
+            raw = await self._call_llm(
+                prompt.content, user, api_key=api_key, call_type="suggest_optimization"
+            )
             parsed = self._parse_json(raw)
-            if isinstance(parsed, list):
-                return parsed
-            return None
+            if not isinstance(parsed, list):
+                logger.warning("LLM suggest_optimization returned non-list response; discarding")
+                return None
+            # Validate each item in the list against the expected schema (BL-050).
+            validated: list[dict] = []
+            for item in parsed:
+                try:
+                    validated.append(_OptimizationSuggestion.model_validate(item).model_dump())
+                except ValidationError as item_exc:
+                    logger.warning(
+                        "LLM suggest_optimization item failed schema validation "
+                        "(skipping): %s",
+                        item_exc,
+                    )
+            return validated if validated else None
         except BudgetExceededError:
             logger.warning("LLM suggest_optimization blocked by budget guard")
             return None
@@ -210,22 +279,23 @@ class LLMClient:
         return scrub_for_llm(text)
 
     def _resolve_client(self, api_key: str | None) -> Any:
-        """Return the Anthropic client to use for a request.
+        """Return the AsyncAnthropic client to use for a request.
 
-        If ``api_key`` is provided, creates a one-shot client scoped to that
-        key.  Otherwise, falls back to the platform-level client.  Raises
-        :class:`LLMDisabledError` if neither is available.
+        If ``api_key`` is provided, creates a one-shot ``AsyncAnthropic``
+        client scoped to that key.  Otherwise, falls back to the platform-
+        level client.  Raises :class:`LLMDisabledError` if neither is
+        available.
         """
         if api_key:
             try:
                 import anthropic
 
-                return anthropic.Anthropic(
+                return anthropic.AsyncAnthropic(
                     api_key=api_key,
                     timeout=self._timeout,
                 )
             except Exception as exc:
-                logger.warning("Failed to create per-tenant Anthropic client: %s", exc)
+                logger.warning("Failed to create per-tenant AsyncAnthropic client: %s", exc)
                 raise LLMDisabledError(
                     "Tenant-provided LLM API key is invalid or the Anthropic SDK "
                     "could not initialise. Check the key and try again."
@@ -238,7 +308,7 @@ class LLMClient:
             "No LLM API key available. Provide a key in Settings or contact your platform administrator."
         )
 
-    def _call_llm(
+    async def _call_llm(
         self,
         system: str,
         user: str,
@@ -248,97 +318,65 @@ class LLMClient:
     ) -> str:
         """Execute a single LLM call and return the text response.
 
-        If a :class:`BudgetGuard` was provided at initialisation, the
-        budget is checked *before* the call and usage is recorded
-        *after* the call completes (success or failure).
+        Uses ``AsyncAnthropic`` so the event loop is never blocked.
+
+        When a :class:`BudgetGuard` is configured, the entire sequence of
+        check → call → record executes atomically under the per-tenant
+        ``asyncio.Lock`` via :meth:`BudgetGuard.guard_call`.  This eliminates
+        the TOCTOU race where multiple concurrent requests could all pass the
+        budget check before any spend has been committed.
 
         Parameters
         ----------
         api_key:
             Optional per-tenant API key.  When provided, a temporary
-            client is created for this call only.
+            ``AsyncAnthropic`` client is created for this call only.
         call_type:
             Label for the type of call (e.g. ``"classify_change"``),
             used for budget tracking.
         """
-        # Budget check (sync wrapper around the async guard).
-        if self._budget_guard is not None and self._budget_guard.has_budget:
-            import asyncio
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're inside an async context -- create a task.
-                    # This should not normally happen since _call_llm is sync,
-                    # but guard against it.
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        pool.submit(asyncio.run, self._budget_guard.check_budget()).result()
-                else:
-                    loop.run_until_complete(self._budget_guard.check_budget())
-            except RuntimeError:
-                asyncio.run(self._budget_guard.check_budget())
-
         client = self._resolve_client(api_key)
 
-        import time as _time
+        # _response_holder captures the Anthropic response object from inside
+        # the inner coroutine so we can extract the text after guard_call().
+        # Using a list as a mutable closure cell avoids instance-level state
+        # that would race under concurrent calls.
+        _response_holder: list[Any] = []
 
-        start_ms = int(_time.monotonic() * 1000)
-        success = False
-        input_tokens = 0
-        output_tokens = 0
-        error_type: str | None = None
-
-        try:
-            response = client.messages.create(
+        async def _make_request() -> LLMUsage:
+            """Inner coroutine: perform the API call and return token usage."""
+            start_ms = int(_time.monotonic() * 1000)
+            response = await client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 temperature=0.0,
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
-            success = True
-
-            # Extract token usage from the response if available.
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                input_tokens = getattr(usage, "input_tokens", 0)
-                output_tokens = getattr(usage, "output_tokens", 0)
-
-            return response.content[0].text
-        except BudgetExceededError:
-            raise
-        except Exception as exc:
-            error_type = type(exc).__name__
-            raise
-        finally:
             latency_ms = int(_time.monotonic() * 1000) - start_ms
+            _response_holder.append(response)
 
-            # Record usage asynchronously if a guard is present.
-            if self._budget_guard is not None and (input_tokens > 0 or output_tokens > 0):
-                try:
-                    import asyncio
+            usage_obj = getattr(response, "usage", None)
+            input_tokens = getattr(usage_obj, "input_tokens", 0) if usage_obj else 0
+            output_tokens = getattr(usage_obj, "output_tokens", 0) if usage_obj else 0
+            return LLMUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+            )
 
-                    coro = self._budget_guard.record_usage(
-                        call_type=call_type,
-                        model_id=self._model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        latency_ms=latency_ms,
-                        success=success,
-                        error_type=error_type,
-                    )
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if not loop.is_running():
-                            loop.run_until_complete(coro)
-                        # If loop is running, we skip recording (would need
-                        # to be handled by the caller in an async context).
-                    except RuntimeError:
-                        asyncio.run(coro)
-                except Exception:
-                    logger.debug("Failed to record LLM usage", exc_info=True)
+        if self._budget_guard is not None and self._budget_guard.has_budget:
+            # Atomic: check budget, run the call, record usage — all under lock.
+            await self._budget_guard.guard_call(
+                _make_request,
+                call_type=call_type,
+                model_id=self._model,
+            )
+        else:
+            # No budget enforcement — call directly.
+            await _make_request()
+
+        return _response_holder[0].content[0].text
 
     @staticmethod
     def _parse_json(raw: str) -> Any:

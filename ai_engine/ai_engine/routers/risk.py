@@ -22,7 +22,8 @@ _cache: ResponseCache | None = None
 
 def get_scorer() -> RiskScorer:
     """Return the module-level scorer instance."""
-    assert _scorer is not None, "RiskScorer not initialised"
+    if _scorer is None:
+        raise RuntimeError("RiskScorer not initialised")
     return _scorer
 
 

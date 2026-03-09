@@ -14,6 +14,7 @@ from core_engine.license.feature_flags import Feature
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.dependencies import SessionDep, SettingsDep, TenantDep, UserDep, require_feature
+from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.schemas import (
     InviteMemberRequest,
@@ -91,8 +92,8 @@ async def remove_member(
     service = TeamService(session, settings, tenant_id=tenant_id)
     try:
         return await service.remove_member(user_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError:
+        raise not_found_404("Team member", user_id)
 
 
 @router.patch("/members/{user_id}", response_model=TeamMemberResponse)

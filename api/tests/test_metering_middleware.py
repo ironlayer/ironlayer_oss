@@ -10,7 +10,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -135,7 +135,7 @@ class TestMeteringMiddlewareRecording:
         headers = _make_auth_headers()
 
         async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
-            resp = await ac.get("/api/v1/health")
+            await ac.get("/api/v1/health")
 
         # /api/v1/health is in _SKIP_PATHS, so no metering event
         # Check that no event was recorded for health
@@ -159,7 +159,7 @@ class TestMeteringMiddlewareRecording:
         headers = _make_auth_headers()
 
         async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac:
-            resp = await ac.get("/api/v1/plans")
+            await ac.get("/api/v1/plans")
 
         # The middleware should have been invoked and recorded an event.
         found = False

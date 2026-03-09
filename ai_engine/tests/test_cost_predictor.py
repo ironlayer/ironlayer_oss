@@ -58,7 +58,11 @@ class TestHasTrainedModel:
         assert predictor.has_trained_model is False
 
     def test_model_loaded_from_disk(self, tmp_path):
-        """When a valid model file exists, has_trained_model is True."""
+        """When a valid model file exists, has_trained_model is True after first predict().
+
+        BL-100: the model is loaded lazily on the first predict() call, so
+        has_trained_model returns False until that warm-up happens.
+        """
         from sklearn.linear_model import LinearRegression
 
         import joblib
@@ -78,6 +82,11 @@ class TestHasTrainedModel:
         joblib.dump(model, model_path)
 
         predictor = CostPredictor(model_path=model_path)
+        # BL-100: before first predict(), model is not yet loaded.
+        assert predictor.has_trained_model is False
+        # Trigger lazy load via predict().
+        predictor.predict(_req(partition_count=1))
+        # Now the model should be loaded.
         assert predictor.has_trained_model is True
 
 
@@ -197,8 +206,11 @@ class TestTrainedModelPrediction:
         return CostPredictor(model_path=model_path)
 
     def test_trained_model_is_used(self, trained_predictor):
-        assert trained_predictor.has_trained_model is True
+        # BL-100: model is loaded lazily on first predict(), not at construction.
+        assert trained_predictor.has_trained_model is False
         result = trained_predictor.predict(_req(partition_count=10, data_volume_bytes=1_000_000_000, num_workers=4))
+        # After first predict the model is warm.
+        assert trained_predictor.has_trained_model is True
         assert isinstance(result, CostPredictResponse)
         assert result.confidence == 0.8  # trained model confidence
         assert result.estimated_runtime_minutes > 0

@@ -6,7 +6,12 @@ using the standard IronLayer test patterns (mock session, dev tokens).
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,7 +20,40 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from conftest import _make_dev_token
+# ---------------------------------------------------------------------------
+# Dev auth token helper (mirrors conftest._make_dev_token and api.security)
+# ---------------------------------------------------------------------------
+
+_TEST_JWT_SECRET = os.environ.get("JWT_SECRET", "test-secret-key-for-ironlayer-tests")
+
+
+def _make_dev_token(
+    tenant_id: str = "default",
+    sub: str = "test-user",
+    role: str = "admin",
+    scopes: list[str] | None = None,
+) -> str:
+    """Generate a valid development-mode HMAC token with a role claim."""
+    now = time.time()
+    payload: dict[str, Any] = {
+        "sub": sub,
+        "tenant_id": tenant_id,
+        "iss": "ironlayer",
+        "iat": now,
+        "exp": now + 3600,
+        "scopes": scopes or ["read", "write"],
+        "jti": "test-jti-event-sub",
+        "identity_kind": "user",
+        "role": role,
+    }
+    payload_json = json.dumps(payload)
+    signature = hmac.new(
+        _TEST_JWT_SECRET.encode("utf-8"),
+        payload_json.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    token_bytes = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("ascii")
+    return f"bmdev.{token_bytes}.{signature}"
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -99,7 +137,7 @@ class TestCreateSubscription:
                 json={
                     "name": "Secure Hook",
                     "url": "https://secure.example.com/hook",
-                    "secret": "my-super-secret-key-123",
+                    "secret": "my-super-secret-key-123-padded-to-32c",
                 },
             )
 

@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class PlatformEnv(str, Enum):
+    """Canonical platform environment. Values: dev, staging, prod.
+
+    For backward compatibility, the string \"production\" is accepted from
+    environment (e.g. API_PLATFORM_ENV, PLATFORM_ENV) and normalized to PROD.
+    """
+
     DEV = "dev"
     STAGING = "staging"
     PROD = "prod"
@@ -37,10 +43,19 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     env: PlatformEnv = PlatformEnv.DEV
     debug: bool = False
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _normalize_env(cls, v: str | PlatformEnv) -> PlatformEnv | str:
+        """Accept \"production\" from env and normalize to PROD for backward compatibility."""
+        if isinstance(v, str) and v.lower() == "production":
+            return PlatformEnv.PROD
+        return v
 
     # Database
     database_url: str = "postgresql+asyncpg://ironlayer:ironlayer_dev@localhost:5432/ironlayer"

@@ -1,0 +1,56 @@
+version: 2
+updates:
+  # Python (uv/pip ecosystem)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - python
+    groups:
+      # Group minor/patch updates to reduce PR noise
+      python-minor:
+        update-types:
+          - minor
+          - patch
+
+  # npm (frontend)
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - javascript
+    groups:
+      npm-minor:
+        update-types:
+          - minor
+          - patch
+
+  # Rust (check_engine)
+  - package-ecosystem: cargo
+    directory: /check_engine
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

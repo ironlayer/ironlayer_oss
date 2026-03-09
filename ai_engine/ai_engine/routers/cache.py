@@ -18,7 +18,8 @@ _cache: ResponseCache | None = None
 
 def get_cache() -> ResponseCache:
     """Return the module-level cache instance."""
-    assert _cache is not None, "ResponseCache not initialised"
+    if _cache is None:
+        raise RuntimeError("ResponseCache not initialised")
     return _cache
 
 

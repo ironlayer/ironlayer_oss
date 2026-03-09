@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from core_engine.diff.ast_diff import (
     compute_ast_diff,
     extract_changed_columns,

@@ -24,7 +24,8 @@ _predictor: FailurePredictor | None = None
 
 def get_predictor() -> FailurePredictor:
     """Return the module-level failure predictor instance."""
-    assert _predictor is not None, "FailurePredictor not initialised"
+    if _predictor is None:
+        raise RuntimeError("FailurePredictor not initialised")
     return _predictor
 
 

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.dependencies import SessionDep, TenantDep
+from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.environment_service import EnvironmentService
 
@@ -143,7 +144,7 @@ async def get_environment(
     service = EnvironmentService(session, tenant_id=tenant_id)
     env = await service.get_environment(name)
     if env is None:
-        raise HTTPException(status_code=404, detail=f"Environment '{name}' not found")
+        raise not_found_404("Environment", name)
     return env
 
 
@@ -158,7 +159,7 @@ async def delete_environment(
     service = EnvironmentService(session, tenant_id=tenant_id)
     deleted = await service.delete_environment(name)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Environment '{name}' not found")
+        raise not_found_404("Environment", name)
     return {"deleted": True, "name": name}
 
 
@@ -182,8 +183,8 @@ async def promote_environment(
             snapshot_id=body.snapshot_id,
             promoted_by=body.promoted_by,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError:
+        raise not_found_404("Environment", name)
 
 
 @router.post("/cleanup")

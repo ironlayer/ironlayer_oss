@@ -18,6 +18,13 @@ use sha2::{Digest, Sha256};
 use crate::config::CheckConfig;
 use crate::types::{DiscoveredFile, DiscoveredFileMeta, ProjectType};
 
+/// BL-118: Maximum file size to check, in bytes (5 MiB).
+///
+/// Files larger than this limit are skipped with a WARNING log entry.
+/// A 500 MiB YAML or SQL file could exhaust available memory during parsing.
+/// Override at a per-project level via `max_file_bytes` in `ironlayer.check.toml`.
+const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+
 /// Hardcoded directory names that are always excluded from file walking.
 const HARDCODED_EXCLUDES: &[&str] = &[
     "target",
@@ -166,6 +173,18 @@ pub fn walk_files(root: &Path, config: &CheckConfig) -> Vec<DiscoveredFile> {
             continue;
         }
 
+        // BL-118: Check file size before reading to prevent memory exhaustion.
+        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if file_size > MAX_FILE_BYTES {
+            log::warn!(
+                "Skipping file {} — size {} bytes exceeds limit {} bytes (BL-118 DoS guard).",
+                path.display(),
+                file_size,
+                MAX_FILE_BYTES,
+            );
+            continue;
+        }
+
         // Read file content
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
@@ -256,6 +275,18 @@ pub fn walk_file_metadata(root: &Path, config: &CheckConfig) -> Vec<DiscoveredFi
                 continue;
             }
         };
+
+        // BL-118: Skip files that exceed the size limit to prevent memory exhaustion.
+        if metadata.len() > MAX_FILE_BYTES {
+            log::warn!(
+                "Skipping file {} — size {} bytes exceeds limit {} bytes (BL-118 DoS guard). \
+                 Reduce the file size or split into smaller files.",
+                path.display(),
+                metadata.len(),
+                MAX_FILE_BYTES,
+            );
+            continue;
+        }
 
         let rel_path = match path.strip_prefix(root) {
             Ok(rel) => rel.to_string_lossy().replace('\\', "/"),

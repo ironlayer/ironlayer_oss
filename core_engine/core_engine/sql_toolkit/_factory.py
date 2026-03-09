@@ -7,7 +7,7 @@ Thread-safe singleton with configurable implementation backend.
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from ._protocols import SqlToolkit
 

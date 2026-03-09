@@ -39,7 +39,7 @@ mkdir -p "${DEMO_DIR}/.ironlayer"
 cd "${DEMO_DIR}"
 
 git init --quiet
-git config user.email "demo@ironlayer.app"
+git config user.email "demo@example.com"
 git config user.name "IronLayer Demo"
 
 # --------------------------------------------------------------------------

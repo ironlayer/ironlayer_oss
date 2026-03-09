@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from core_engine.parser.normalizer import (
     CURRENT_VERSION,
     CanonicalizerVersion,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import time
 from collections import defaultdict
@@ -46,6 +47,13 @@ class SharedSecretMiddleware(BaseHTTPMiddleware):
                 "Refusing to start AI engine without authentication."
             )
 
+        # Optional previous secret for zero-downtime rotation (BL-049).
+        # During rotation: set AI_ENGINE_SHARED_SECRET to the new secret and
+        # AI_ENGINE_SHARED_SECRET_PREVIOUS to the old secret.  Both values are
+        # accepted until all callers have been updated to the new secret, then
+        # AI_ENGINE_SHARED_SECRET_PREVIOUS can be removed.
+        self._previous_secret = os.environ.get("AI_ENGINE_SHARED_SECRET_PREVIOUS", "")
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Allow health checks without auth.
         if request.url.path in _PUBLIC_PATHS:
@@ -59,7 +67,19 @@ class SharedSecretMiddleware(BaseHTTPMiddleware):
             )
 
         token = auth_header[7:]  # Strip "Bearer " prefix
-        if not secrets.compare_digest(token, self._secret):
+
+        # Accept the current secret or the previous secret (rotation window).
+        valid = secrets.compare_digest(token, self._secret)
+        if not valid and self._previous_secret:
+            valid = secrets.compare_digest(token, self._previous_secret)
+            if valid:
+                logger.info(
+                    "AI engine auth: request from %s accepted with previous shared secret "
+                    "-- update caller to use the new AI_ENGINE_SHARED_SECRET.",
+                    request.client.host if request.client else "unknown",
+                )
+
+        if not valid:
             logger.warning(
                 "AI engine auth failed: invalid shared secret from %s",
                 request.client.host if request.client else "unknown",
@@ -138,7 +158,10 @@ class AIRateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        tenant_id = request.headers.get("x-tenant-id", "__unknown__")
+        raw_tenant_id = request.headers.get("x-tenant-id", "__unknown__")
+        # BL-076: Sanitize tenant_id before logging to prevent log injection.
+        # A header value containing \n or \r can inject fake log lines into SIEM.
+        tenant_id = re.sub(r"[\r\n\t\0]", "_", raw_tenant_id)[:128]
         bucket = self._buckets[tenant_id]
         allowed, retry_after = bucket.check()
 

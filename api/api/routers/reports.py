@@ -28,7 +28,11 @@ def _parse_date(value: str | None, default_days_ago: int = 30) -> datetime:
         try:
             return datetime.fromisoformat(value).replace(tzinfo=UTC)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {value}")
+            logger.warning("Invalid date format in report query: %r", value)
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request parameters. Expected ISO date format for since/until.",
+            )
     return datetime.now(UTC) - timedelta(days=default_days_ago)
 
 
@@ -94,9 +98,17 @@ async def export_report(
     until_dt = _parse_date(until, 0) if until else datetime.now(UTC)
 
     if report_type not in ("cost", "usage", "llm"):
-        raise HTTPException(status_code=400, detail=f"Invalid report_type: {report_type}")
+        logger.warning("Invalid report_type in export: %r", report_type)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request parameters. report_type must be one of: cost, usage, llm.",
+        )
     if fmt not in ("csv", "json"):
-        raise HTTPException(status_code=400, detail=f"Invalid format: {fmt}")
+        logger.warning("Invalid format in export: %r", fmt)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request parameters. format must be csv or json.",
+        )
 
     service = ReportingService(session, tenant_id)
     data_bytes, content_type, filename = await service.export_data(report_type, since_dt, until_dt, fmt)

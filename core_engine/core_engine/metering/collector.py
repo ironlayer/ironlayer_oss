@@ -124,6 +124,8 @@ class MeteringCollector:
         sink: MeteringSink,
         flush_interval_seconds: float = 60.0,
         max_buffer_size: int = 1000,
+        circuit_breaker_threshold: int = 3,
+        circuit_breaker_backoff: float = 60.0,
     ) -> None:
         self._sink = sink
         self._flush_interval = flush_interval_seconds
@@ -132,6 +134,11 @@ class MeteringCollector:
         self._lock = threading.Lock()
         self._flush_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # BL-097: Circuit breaker state for persistent flush failures.
+        self._consecutive_flush_failures: int = 0
+        self._circuit_breaker_threshold = circuit_breaker_threshold
+        self._circuit_breaker_backoff = circuit_breaker_backoff
+        self._circuit_open_until: float = 0.0
 
     def record(self, event: UsageEvent) -> None:
         """Record a usage event.
@@ -196,15 +203,60 @@ class MeteringCollector:
             return self._flush_locked()
 
     def _flush_locked(self) -> int:
-        """Flush while already holding the lock."""
+        """Flush while already holding the lock.
+
+        BL-097: Circuit breaker — after circuit_breaker_threshold consecutive
+        failures, the oldest 80% of buffered events are dropped with a WARNING
+        and flushing is paused for circuit_breaker_backoff seconds.
+        """
+        import time as _time
         if not self._buffer:
             return 0
+
+        # If circuit is open, drop incoming events until backoff expires.
+        now = _time.monotonic()
+        if self._circuit_open_until > now:
+            remaining = int(self._circuit_open_until - now)
+            logger.warning(
+                "Metering circuit open — dropping %d events (backoff %ds remaining)",
+                len(self._buffer),
+                remaining,
+            )
+            self._buffer.clear()
+            return 0
+
         batch = list(self._buffer)
         self._buffer.clear()
         try:
             self._sink.flush(batch)
+            self._consecutive_flush_failures = 0
         except Exception:
-            logger.warning("Metering flush failed; %d events lost", len(batch), exc_info=True)
+            self._consecutive_flush_failures += 1
+            if self._consecutive_flush_failures >= self._circuit_breaker_threshold:
+                # Trip the circuit breaker.  Shed the oldest 80% of the
+                # *failed batch* (the buffer itself is already empty at this
+                # point) and push the surviving 20% back so they get another
+                # chance after the backoff window expires.
+                keep_count = max(1, int(len(batch) * 0.20))
+                dropped = len(batch) - keep_count
+                self._buffer.extend(batch[-keep_count:])
+                self._circuit_open_until = _time.monotonic() + self._circuit_breaker_backoff
+                logger.warning(
+                    "Metering circuit breaker tripped after %d consecutive failures. "
+                    "Dropped %d buffered events, kept %d. Pausing flush for %.0fs.",
+                    self._consecutive_flush_failures,
+                    dropped,
+                    keep_count,
+                    self._circuit_breaker_backoff,
+                )
+            else:
+                logger.warning(
+                    "Metering flush failed (attempt %d/%d); %d events lost",
+                    self._consecutive_flush_failures,
+                    self._circuit_breaker_threshold,
+                    len(batch),
+                    exc_info=True,
+                )
         return len(batch)
 
     def start_background_flush(self) -> None:

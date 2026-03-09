@@ -4,6 +4,9 @@ Provides commands for plan generation, inspection, execution, backfill,
 model listing, and lineage traversal.  Human-readable output goes to
 *stderr* via Rich; machine-readable artefacts (plan JSON, metrics) go to
 files on disk so that pipelines can compose cleanly.
+
+Metrics emission is handled exclusively by :mod:`cli.state` via
+``emit_metrics()`` — do not duplicate that logic here.
 """
 
 from __future__ import annotations

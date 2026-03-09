@@ -241,7 +241,7 @@ def _run_python_fallback(
         models_dir = repo
 
     try:
-        models = load_models_from_directory(str(models_dir))
+        models = load_models_from_directory(models_dir)
     except Exception as exc:
         console.print(f"[red]Failed to load models: {exc}[/red]")
         raise typer.Exit(code=3) from exc

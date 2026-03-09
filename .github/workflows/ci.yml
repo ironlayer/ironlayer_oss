@@ -350,6 +350,54 @@ jobs:
         run: uv run --package ironlayer-core python -m alembic -c core_engine/state/migrations/alembic.ini upgrade head
 
   # ---------------------------------------------------------------------------
+  # Rust check_engine: cargo test + clippy + maturin build verification
+  # Ensures the PyO3 extension compiles and all 647 Rust tests pass.
+  # ---------------------------------------------------------------------------
+  test-check-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.75.0"
+          components: clippy
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            check_engine/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('check_engine/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Run cargo tests
+        working-directory: check_engine
+        run: cargo test --all --release
+
+      - name: Run cargo clippy (deny warnings)
+        working-directory: check_engine
+        run: cargo clippy -- -D warnings
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install maturin
+        run: uv pip install "maturin>=1.4,<2.0"
+
+      - name: Build PyO3 extension (verify it compiles)
+        working-directory: check_engine
+        run: maturin build --release
+
+  # ---------------------------------------------------------------------------
   # Security scanning (pip-audit, Trivy, Bandit)
   # ---------------------------------------------------------------------------
   security-scan:
@@ -406,7 +454,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-and-push:
     runs-on: ubuntu-latest
-    needs: [lint, test-core, test-ai, test-api, test-cli, test-frontend, test-integration, test-e2e, planner-determinism, security-scan, validate-migrations]
+    needs: [lint, test-core, test-ai, test-api, test-cli, test-frontend, test-integration, test-e2e, planner-determinism, security-scan, validate-migrations, test-check-engine]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       id-token: write

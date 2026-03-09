@@ -3,7 +3,7 @@
 Covers the AuthService at the service layer with mocked repositories
 and token manager:
 - Signup: user creation, tenant provisioning, duplicate detection, validation
-- Login: credential verification, deactivated accounts
+- Login: credential verification, deactivated accounts, audit log on failure
 - Refresh: token validation, scope checks, user status
 - GetCurrentUser: profile retrieval, not-found
 - API Keys: creation, listing, revocation, validation
@@ -11,6 +11,7 @@ and token manager:
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -268,8 +269,9 @@ class TestLogin:
         mock_tm.generate_refresh_token.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
     @patch("api.services.auth_service.UserRepository")
-    async def test_invalid_credentials(self, MockUserRepo):
+    async def test_invalid_credentials(self, MockUserRepo, MockAuditService):
         """Invalid credentials raise AuthError with status 401."""
         mock_session = AsyncMock()
         mock_tm = _make_token_manager_mock()
@@ -277,6 +279,10 @@ class TestLogin:
         mock_repo = AsyncMock()
         mock_repo.verify_password = AsyncMock(return_value=None)
         MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
 
         svc = AuthService(mock_session, token_manager=mock_tm)
 
@@ -316,13 +322,20 @@ class TestRefresh:
 
     @pytest.mark.asyncio
     @patch("api.services.auth_service.UserRepository")
-    async def test_successful_refresh(self, MockUserRepo):
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_successful_refresh(self, MockRevocationRepo, MockUserRepo):
         """Valid refresh token generates a new token pair."""
         mock_session = AsyncMock()
         mock_tm = _make_token_manager_mock()
 
         claims = _make_claims_mock(scopes=["refresh"])
-        mock_tm.validate_token = MagicMock(return_value=claims)
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        # BL-072: revocation check must pass (not revoked).
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=False)
+        mock_revocation_repo.revoke = AsyncMock()
+        MockRevocationRepo.return_value = mock_revocation_repo
 
         user = _make_user_mock(is_active=True)
         mock_repo = AsyncMock()
@@ -334,7 +347,7 @@ class TestRefresh:
 
         assert result["access_token"] == "access_token_xxx"
         assert result["refresh_token"] == "refresh_token_xxx"
-        mock_tm.validate_token.assert_called_once_with("rt_valid")
+        mock_tm.validate_token_async.assert_awaited_once_with("rt_valid")
         mock_repo.get_by_id.assert_awaited_once_with(claims.sub)
 
     @pytest.mark.asyncio
@@ -342,7 +355,7 @@ class TestRefresh:
         """Invalid refresh token raises AuthError with status 401."""
         mock_session = AsyncMock()
         mock_tm = _make_token_manager_mock()
-        mock_tm.validate_token = MagicMock(side_effect=PermissionError("Token signature verification failed"))
+        mock_tm.validate_token_async = AsyncMock(side_effect=PermissionError("Token signature verification failed"))
 
         svc = AuthService(mock_session, token_manager=mock_tm)
 
@@ -358,7 +371,7 @@ class TestRefresh:
         mock_tm = _make_token_manager_mock()
 
         claims = _make_claims_mock(scopes=["read", "write"])
-        mock_tm.validate_token = MagicMock(return_value=claims)
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
 
         svc = AuthService(mock_session, token_manager=mock_tm)
 
@@ -370,13 +383,19 @@ class TestRefresh:
 
     @pytest.mark.asyncio
     @patch("api.services.auth_service.UserRepository")
-    async def test_user_deactivated(self, MockUserRepo):
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_user_deactivated(self, MockRevocationRepo, MockUserRepo):
         """Refresh for a deactivated user raises AuthError with status 401."""
         mock_session = AsyncMock()
         mock_tm = _make_token_manager_mock()
 
         claims = _make_claims_mock(scopes=["refresh"])
-        mock_tm.validate_token = MagicMock(return_value=claims)
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=False)
+        mock_revocation_repo.revoke = AsyncMock()
+        MockRevocationRepo.return_value = mock_revocation_repo
 
         user = _make_user_mock(is_active=False)
         mock_repo = AsyncMock()
@@ -392,13 +411,19 @@ class TestRefresh:
 
     @pytest.mark.asyncio
     @patch("api.services.auth_service.UserRepository")
-    async def test_user_not_found_during_refresh(self, MockUserRepo):
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_user_not_found_during_refresh(self, MockRevocationRepo, MockUserRepo):
         """Refresh for a deleted user raises AuthError with status 401."""
         mock_session = AsyncMock()
         mock_tm = _make_token_manager_mock()
 
         claims = _make_claims_mock(scopes=["refresh"])
-        mock_tm.validate_token = MagicMock(return_value=claims)
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=False)
+        mock_revocation_repo.revoke = AsyncMock()
+        MockRevocationRepo.return_value = mock_revocation_repo
 
         mock_repo = AsyncMock()
         mock_repo.get_by_id = AsyncMock(return_value=None)
@@ -410,6 +435,92 @@ class TestRefresh:
             await svc.refresh("rt_deleted_user")
 
         assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_refresh_rejects_revoked_jti(self, MockRevocationRepo):
+        """BL-072: refresh() raises AuthError 401 when the refresh token's JTI is revoked.
+
+        This covers the /auth/session endpoint which bypasses the auth middleware's
+        revocation check (it is a public path).  The explicit is_revoked() call in
+        refresh() blocks revoked tokens before any new tokens are issued.
+        """
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        claims = _make_claims_mock(scopes=["refresh"])
+        claims.jti = "already-revoked-jti"
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=True)
+        MockRevocationRepo.return_value = mock_revocation_repo
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError) as exc_info:
+            await svc.refresh("rt_already_revoked")
+
+        assert exc_info.value.status_code == 401
+        # The error message is deliberately generic ("Invalid or expired token")
+        # to prevent attackers from distinguishing revocation from expiry.
+        assert "invalid or expired" in str(exc_info.value).lower()
+        mock_revocation_repo.is_revoked.assert_awaited_once_with(claims.jti)
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.UserRepository")
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_refresh_proceeds_when_jti_not_revoked(self, MockRevocationRepo, MockUserRepo):
+        """BL-072: refresh() issues new tokens when the JTI is NOT revoked."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        claims = _make_claims_mock(scopes=["refresh"])
+        claims.jti = "active-jti"
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=False)
+        mock_revocation_repo.revoke = AsyncMock()
+        MockRevocationRepo.return_value = mock_revocation_repo
+
+        user = _make_user_mock(is_active=True)
+        mock_user_repo = AsyncMock()
+        mock_user_repo.get_by_id = AsyncMock(return_value=user)
+        MockUserRepo.return_value = mock_user_repo
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+        result = await svc.refresh("rt_active")
+
+        assert result["access_token"] == "access_token_xxx"
+        assert result["refresh_token"] == "refresh_token_xxx"
+        mock_revocation_repo.is_revoked.assert_awaited_once_with(claims.jti)
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.TokenRevocationRepository")
+    async def test_refresh_revocation_check_happens_before_user_lookup(self, MockRevocationRepo):
+        """BL-072: revocation check occurs before user repository is queried."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        claims = _make_claims_mock(scopes=["refresh"])
+        claims.jti = "revoked-before-user-lookup"
+        mock_tm.validate_token_async = AsyncMock(return_value=claims)
+
+        mock_revocation_repo = AsyncMock()
+        mock_revocation_repo.is_revoked = AsyncMock(return_value=True)
+        MockRevocationRepo.return_value = mock_revocation_repo
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError) as exc_info:
+            await svc.refresh("rt_revoked_early")
+
+        # Must fail at 401 (revocation), not proceed to user lookup or token generation.
+        assert exc_info.value.status_code == 401
+        # Token generation should never have been called.
+        mock_tm.generate_token.assert_not_called()
+        mock_tm.generate_refresh_token.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -691,3 +802,295 @@ class TestAPIKeys:
             )
 
         assert "name" in str(exc_info.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# TestLoginAuditLog (BL-084)
+# ---------------------------------------------------------------------------
+
+
+class TestLoginAuditLog:
+    """Verify that failed login attempts are written to the audit log (BL-084).
+
+    The audit entry must:
+    - Use action=AuditAction.AUTH_FAILED
+    - Use entity_id = SHA-256(email), not plaintext
+    - Include reason="invalid_credentials" in metadata
+    - Optionally include ip when provided
+    - Return the same error message regardless of failure cause (oracle prevention)
+    """
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_failed_login_writes_audit_entry(self, MockUserRepo, MockAuditService):
+        """A failed credential check writes an AUTH_FAILED audit log entry."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError) as exc_info:
+            await svc.login(email="bad@example.com", password="wrongpass")
+
+        assert exc_info.value.status_code == 401
+
+        # AuditService must have been instantiated with the sentinel tenant id.
+        MockAuditService.assert_called_once_with(
+            mock_session,
+            tenant_id="__auth__",
+            actor="unauthenticated",
+        )
+
+        # log() must have been called with AUTH_FAILED and SHA-256 of email.
+        expected_hash = hashlib.sha256("bad@example.com".encode("utf-8")).hexdigest()
+        mock_audit_svc.log.assert_awaited_once()
+        call_args = mock_audit_svc.log.call_args
+        assert call_args.args[0] == "AUTH_FAILED"
+        assert call_args.kwargs.get("entity_type") == "user"
+        assert call_args.kwargs.get("entity_id") == expected_hash
+        assert call_args.kwargs.get("reason") == "invalid_credentials"
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_failed_login_includes_ip_when_provided(self, MockUserRepo, MockAuditService):
+        """When ip is passed, it is included in the audit log metadata."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError):
+            await svc.login(email="attacker@example.com", password="guess", ip="192.168.1.99")
+
+        call_args = mock_audit_svc.log.call_args
+        assert call_args.kwargs.get("ip") == "192.168.1.99"
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_failed_login_omits_ip_when_not_provided(self, MockUserRepo, MockAuditService):
+        """When ip is not passed, it must not appear in the audit log metadata."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError):
+            await svc.login(email="anon@example.com", password="guess")
+
+        call_args = mock_audit_svc.log.call_args
+        assert "ip" not in call_args.kwargs
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_failed_login_entity_id_is_sha256_not_plaintext(self, MockUserRepo, MockAuditService):
+        """entity_id in audit log must be the SHA-256 hash, never plaintext email."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        email = "secret@example.com"
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError):
+            await svc.login(email=email, password="guess")
+
+        call_args = mock_audit_svc.log.call_args
+        entity_id = call_args.kwargs.get("entity_id")
+
+        # Must NOT be the raw email.
+        assert entity_id != email
+        # Must be a 64-char hex string (SHA-256 hexdigest).
+        assert len(entity_id) == 64
+        assert all(c in "0123456789abcdef" for c in entity_id)
+        # Must match what we compute independently.
+        expected = hashlib.sha256(email.encode("utf-8")).hexdigest()
+        assert entity_id == expected
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_failed_login_same_error_message_oracle_prevention(self, MockUserRepo, MockAuditService):
+        """Same HTTP 401 error message is returned regardless of whether the email
+        was not found or the password was wrong, preventing user-enumeration (oracle attack).
+
+        Both cases reach verify_password which returns None — the service layer
+        sees a single None result and emits the same message in both paths.
+        """
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        # First call simulates "email not found".
+        with pytest.raises(AuthError) as exc1:
+            await svc.login(email="notfound@example.com", password="any")
+        msg1 = str(exc1.value)
+
+        # Second call simulates "wrong password" — still returns None from verify_password.
+        with pytest.raises(AuthError) as exc2:
+            await svc.login(email="exists@example.com", password="wrongpass")
+        msg2 = str(exc2.value)
+
+        assert exc1.value.status_code == exc2.value.status_code == 401
+        assert msg1 == msg2, "Error messages differ — oracle attack vector present"
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_successful_login_does_not_call_audit_service(self, MockUserRepo, MockAuditService):
+        """AuditService.log() must NOT be called on a successful login."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        user = _make_user_mock(is_active=True)
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=user)
+        mock_repo.update_last_login = AsyncMock()
+        MockUserRepo.return_value = mock_repo
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+        result = await svc.login(email="test@example.com", password="correctpass")
+
+        assert result["access_token"] == "access_token_xxx"
+        # AuditService should not have been instantiated at all for success path.
+        MockAuditService.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("api.services.auth_service.AuditService")
+    @patch("api.services.auth_service.UserRepository")
+    async def test_audit_log_uses_lowercased_email_for_hash(self, MockUserRepo, MockAuditService):
+        """Email is lowercased before hashing so the same address always produces
+        the same entity_id regardless of the case the caller used."""
+        mock_session = AsyncMock()
+        mock_tm = _make_token_manager_mock()
+
+        mock_repo = AsyncMock()
+        mock_repo.verify_password = AsyncMock(return_value=None)
+        MockUserRepo.return_value = mock_repo
+
+        mock_audit_svc = AsyncMock()
+        mock_audit_svc.log = AsyncMock(return_value="audit_entry_id")
+        MockAuditService.return_value = mock_audit_svc
+
+        svc = AuthService(mock_session, token_manager=mock_tm)
+
+        with pytest.raises(AuthError):
+            # Mixed-case email.
+            await svc.login(email="USER@Example.COM", password="guess")
+
+        call_args = mock_audit_svc.log.call_args
+        entity_id = call_args.kwargs.get("entity_id")
+
+        # AuthService lowercases email before hashing.
+        expected = hashlib.sha256("user@example.com".encode("utf-8")).hexdigest()
+        assert entity_id == expected
+
+
+# ---------------------------------------------------------------------------
+# TestAPIKeyPrefixLength (BL-085)
+# ---------------------------------------------------------------------------
+
+
+class TestAPIKeyPrefixLength:
+    """Verify that the APIKeyRepository generates a 16-character prefix (BL-085)."""
+
+    def test_generate_key_prefix_is_16_chars(self):
+        """_generate_key() must return a 16-character prefix (not 8)."""
+        from core_engine.state.repository import APIKeyRepository
+        from unittest.mock import AsyncMock
+
+        repo = APIKeyRepository(AsyncMock(), tenant_id="t_test")
+        plaintext, prefix, key_hash = repo._generate_key()
+
+        assert len(prefix) == 16, f"Expected 16-char prefix, got {len(prefix)}: {prefix!r}"
+
+    def test_generate_key_prefix_is_hex(self):
+        """The prefix consists entirely of hexadecimal characters."""
+        from core_engine.state.repository import APIKeyRepository
+        from unittest.mock import AsyncMock
+
+        repo = APIKeyRepository(AsyncMock(), tenant_id="t_test")
+        _, prefix, _ = repo._generate_key()
+
+        assert all(c in "0123456789abcdef" for c in prefix), (
+            f"Prefix contains non-hex characters: {prefix!r}"
+        )
+
+    def test_generate_key_prefix_is_first_16_chars_of_random_part(self):
+        """The prefix is the first 16 characters of the random hex portion of the key."""
+        from core_engine.state.repository import APIKeyRepository
+        from unittest.mock import AsyncMock
+
+        repo = APIKeyRepository(AsyncMock(), tenant_id="t_test")
+        plaintext, prefix, _ = repo._generate_key()
+
+        # plaintext format: "bmkey.<random_part>"
+        convention = APIKeyRepository._KEY_PREFIX_CONVENTION
+        assert plaintext.startswith(convention)
+        random_part = plaintext[len(convention):]
+        assert prefix == random_part[:16]
+
+    def test_generate_key_prefix_uniqueness(self):
+        """Two independently generated keys should have different prefixes (probabilistic)."""
+        from core_engine.state.repository import APIKeyRepository
+        from unittest.mock import AsyncMock
+
+        repo = APIKeyRepository(AsyncMock(), tenant_id="t_test")
+        _, prefix1, _ = repo._generate_key()
+        _, prefix2, _ = repo._generate_key()
+
+        assert prefix1 != prefix2, "Two independently generated keys produced the same prefix"
+
+    def test_api_key_table_prefix_column_is_string16(self):
+        """APIKeyTable.key_prefix column must be String(16) in the ORM definition."""
+        from core_engine.state.tables import APIKeyTable
+        from sqlalchemy import String
+
+        col = APIKeyTable.__table__.c["key_prefix"]
+        assert isinstance(col.type, String)
+        assert col.type.length == 16, (
+            f"Expected key_prefix length 16, got {col.type.length}"
+        )

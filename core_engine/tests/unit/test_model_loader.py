@@ -6,7 +6,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from core_engine.loader.model_loader import (
     HeaderParseError,
     ModelLoadError,

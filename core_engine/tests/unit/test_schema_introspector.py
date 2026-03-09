@@ -8,11 +8,8 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from core_engine.executor.schema_introspector import (
     ColumnInfo,
-    SchemaDrift,
     TableSchema,
     compare_schemas,
     compare_with_contracts,

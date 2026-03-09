@@ -22,7 +22,8 @@ _cache: ResponseCache | None = None
 
 def get_predictor() -> CostPredictor:
     """Return the module-level predictor instance."""
-    assert _predictor is not None, "CostPredictor not initialised"
+    if _predictor is None:
+        raise RuntimeError("CostPredictor not initialised")
     return _predictor
 
 

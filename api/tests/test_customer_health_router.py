@@ -221,7 +221,9 @@ class TestGetTenantHealthEndpoint:
             resp = await client.get("/api/v1/admin/health/tenants/nonexistent")
 
         assert resp.status_code == 404
-        assert "No health data" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "Health data for tenant" in detail and "not found" in detail
+        assert "POST" in detail and "compute" in detail, "404 should hint at how to get health data"
 
     @pytest.mark.asyncio
     async def test_non_admin_forbidden(self, client: AsyncClient) -> None:

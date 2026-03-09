@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
-
 from core_engine.state.sqlite_adapter import (
     create_local_tables,
     get_local_engine,
@@ -106,7 +104,7 @@ class TestGetLocalSession:
         await create_local_tables(engine)
 
         with pytest.raises(ValueError, match="test error"):
-            async with get_local_session(engine) as session:
+            async with get_local_session(engine):
                 raise ValueError("test error")
 
         await engine.dispose()

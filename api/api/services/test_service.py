@@ -24,6 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 
+class PlanNotFoundError(Exception):
+    """Raised when a plan ID does not exist. Router should map to HTTP 404."""
+
+    def __init__(self, plan_id: str) -> None:
+        self.plan_id = plan_id
+        super().__init__(f"Plan {plan_id} not found")
+
+
 class TestService:
     """High-level service for running and managing model tests.
 
@@ -182,7 +190,7 @@ class TestService:
         plan_repo = PlanRepository(self._session, tenant_id=self._tenant_id)
         plan_row = await plan_repo.get_plan(plan_id)
         if plan_row is None:
-            raise ValueError(f"Plan {plan_id} not found")
+            raise PlanNotFoundError(plan_id)
 
         plan_data = json.loads(plan_row.plan_json) if isinstance(plan_row.plan_json, str) else plan_row.plan_json
 
@@ -261,7 +269,17 @@ class TestService:
         dict
             Summary with ``total``, ``passed``, ``failed``, ``blocked``,
             and a ``results`` list.
+
+        Raises
+        ------
+        PlanNotFoundError
+            When the plan does not exist (router should return 404).
         """
+        plan_repo = PlanRepository(self._session, tenant_id=self._tenant_id)
+        plan_row = await plan_repo.get_plan(plan_id)
+        if plan_row is None:
+            raise PlanNotFoundError(plan_id)
+
         summary = await self._result_repo.get_summary(plan_id)
         rows = await self._result_repo.get_for_plan(plan_id)
 

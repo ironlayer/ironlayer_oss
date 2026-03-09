@@ -31,7 +31,7 @@ class WebhookConfigCreate(BaseModel):
 
     repo_url: str = Field(..., description="Repository clone or HTTPS URL.")
     branch: str = Field(default="main", description="Branch to listen on.")
-    secret: str = Field(..., min_length=8, description="Webhook secret (min 8 chars).")
+    secret: str = Field(..., min_length=32, description="Webhook secret (min 32 chars, ~128-bit entropy).")
     auto_plan: bool = Field(default=True, description="Auto-generate plans on push.")
     auto_apply: bool = Field(default=False, description="Auto-apply generated plans.")
 
@@ -185,17 +185,27 @@ async def github_webhook(request: Request) -> dict[str, Any]:
                     detail="Signature verification failed",
                 )
         else:
-            # secret_encrypted column is not yet populated for this
-            # config (pre-migration or legacy config).  Log a warning
-            # so operators know HMAC validation is degraded.  This
-            # branch will be removed after migration 023 backfills
-            # encrypted secrets for all existing configs.
-            logger.warning(
+            # secret_encrypted is null — this config was created before
+            # migration 023 or was not given a secret.  Without a secret
+            # we cannot compute the expected HMAC so the request MUST be
+            # rejected.  Operators must re-create the webhook config with
+            # a secret or run migration 023 to backfill encrypted secrets.
+            # Logging and proceeding without verification (the prior
+            # behaviour) allowed unauthenticated webhook processing.
+            logger.error(
                 "Webhook config id=%s for repo=%s has no encrypted secret; "
-                "HMAC validation skipped.  Populate secret_encrypted to "
-                "enable signature verification.",
+                "HMAC cannot be verified — rejecting request to prevent "
+                "unauthenticated webhook processing.",
                 config.id,
                 repo_url,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Webhook signature cannot be verified: this webhook "
+                    "configuration has no secret.  Update the webhook "
+                    "configuration to include a secret."
+                ),
             )
 
         # ---------------------------------------------------------------

@@ -31,6 +31,7 @@ from api.dependencies import (
     get_settings,
     get_tenant_session,
 )
+from api.test_utils import set_app_state_for_test
 from api.main import create_app
 from api.services.ai_client import AIServiceClient
 
@@ -123,6 +124,14 @@ def _create_app_with_tier(tier: str) -> Any:
     mock_metering.record = MagicMock()
     mock_metering.flush = MagicMock(return_value=0)
     mock_metering.pending_count = 0
+
+    set_app_state_for_test(
+        app,
+        settings=settings,
+        session=mock_session,
+        ai_client=mock_ai_client,
+        metering=mock_metering,
+    )
 
     app.dependency_overrides[get_db_session] = _override_session
     app.dependency_overrides[get_tenant_session] = _override_session

@@ -82,7 +82,7 @@ async def list_usage_events(
     role: RoleDep,
     event_type: str | None = Query(default=None, description="Filter by event type"),
     limit: int = Query(default=50, ge=1, le=500, description="Maximum events to return"),
-    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    offset: int = Query(default=0, ge=0, le=100_000, description="Pagination offset"),
 ) -> dict[str, Any]:
     """Return paginated usage events for the current tenant.
 

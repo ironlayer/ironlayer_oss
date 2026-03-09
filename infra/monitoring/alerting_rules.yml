@@ -38,7 +38,7 @@ groups:
             API 5xx error rate is {{ $value | humanizePercentage }}, which is
             14.4× the 0.1% error budget.  At this rate the 30-day budget will
             be exhausted in ~1 hour.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/api-error-rate"
+          runbook: "https://github.com/ironlayer/ironlayer_oss/wiki/runbooks/api-error-rate"
 
       # Slow-burn: >6× error budget for 30 minutes → budget exhausted in 5 hours.
       - alert: APIHighErrorRateSlowBurn
@@ -58,7 +58,7 @@ groups:
           description: >
             API 5xx error rate has been elevated for 15 min.  Error budget
             consumption is 6× the target rate.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/api-error-rate"
+          runbook: "https://github.com/ironlayer/ironlayer_oss/wiki/runbooks/api-error-rate"
 
       # Catastrophic spike: >2% error rate for 2 minutes.
       # Threshold is above the fast-burn page trigger (14.4 × 0.1% = 1.44%)

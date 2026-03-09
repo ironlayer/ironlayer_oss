@@ -3,7 +3,7 @@ import { Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
-import ErrorBoundary from './components/ErrorBoundary';
+import ErrorBoundary, { PageErrorFallback } from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
@@ -21,8 +21,19 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 
+// BL-114: Per-route ErrorBoundary helper — wraps a single route element so
+// an uncaught error in one page does not unmount the entire application shell.
+function RouteErrorBoundary({ children }: { children: React.ReactNode }) {
+  return (
+    <ErrorBoundary fallback={<PageErrorFallback />}>
+      {children}
+    </ErrorBoundary>
+  );
+}
+
 function App() {
   return (
+    // App-level boundary catches errors outside of any route (e.g. AuthProvider).
     <ErrorBoundary>
       <AuthProvider>
         <Suspense
@@ -33,26 +44,66 @@ function App() {
           }
         >
           <Routes>
-            {/* Public routes */}
+            {/* Public routes — no per-route boundary needed; errors bubble to app-level */}
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
 
-            {/* Protected routes */}
+            {/* Protected routes — each page gets its own ErrorBoundary (BL-114).
+                An error in PlanDetail will not unmount Dashboard, ModelCatalog, etc. */}
             <Route element={<ProtectedRoute />}>
-              <Route path="/onboarding" element={<OnboardingPage />} />
+              <Route
+                path="/onboarding"
+                element={<RouteErrorBoundary><OnboardingPage /></RouteErrorBoundary>}
+              />
               <Route element={<Layout />}>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/plans/:id" element={<PlanDetail />} />
-                <Route path="/models" element={<ModelCatalog />} />
-                <Route path="/models/:name" element={<ModelDetail />} />
-                <Route path="/backfills" element={<BackfillPage />} />
-                <Route path="/runs/:id" element={<RunDetail />} />
-                <Route path="/usage" element={<UsageDashboard />} />
-                <Route path="/billing" element={<BillingPage />} />
-                <Route path="/environments" element={<Environments />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/admin" element={<AdminDashboard />} />
-                <Route path="/admin/reports" element={<ReportsPage />} />
+                <Route
+                  path="/"
+                  element={<RouteErrorBoundary><Dashboard /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/plans/:id"
+                  element={<RouteErrorBoundary><PlanDetail /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/models"
+                  element={<RouteErrorBoundary><ModelCatalog /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/models/:name"
+                  element={<RouteErrorBoundary><ModelDetail /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/backfills"
+                  element={<RouteErrorBoundary><BackfillPage /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/runs/:id"
+                  element={<RouteErrorBoundary><RunDetail /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/usage"
+                  element={<RouteErrorBoundary><UsageDashboard /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/billing"
+                  element={<RouteErrorBoundary><BillingPage /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/environments"
+                  element={<RouteErrorBoundary><Environments /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/settings"
+                  element={<RouteErrorBoundary><SettingsPage /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/admin"
+                  element={<RouteErrorBoundary><AdminDashboard /></RouteErrorBoundary>}
+                />
+                <Route
+                  path="/admin/reports"
+                  element={<RouteErrorBoundary><ReportsPage /></RouteErrorBoundary>}
+                />
               </Route>
             </Route>
           </Routes>

@@ -16,8 +16,8 @@
 
 project_name        = "ironlayer"
 environment         = "production"        # production | staging | development
-azure_location      = "eastus2"
-resource_group_name = "ironlayer-production"
+azure_location      = "eastus2"           # e.g. eastus2, westeurope, australiaeast
+resource_group_name = "ironlayer-production"  # your Azure resource group name
 
 # Additional tags applied to every resource.
 # tags = {
@@ -80,7 +80,7 @@ frontend_image_tag    = "latest"
 # -----------------------------------------------------------------------------
 
 # Custom domain (leave empty to use Azure-provided *.azurecontainerapps.io FQDN).
-# domain_name = "app.ironlayer.app"
+# domain_name = "app.yourdomain.com"
 
 # -----------------------------------------------------------------------------
 # Secrets

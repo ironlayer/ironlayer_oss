@@ -6,8 +6,6 @@ contract violations, diamond DAG patterns, and edge cases.
 
 from __future__ import annotations
 
-import pytest
-
 from core_engine.models.model_definition import (
     ColumnContract,
     ModelDefinition,
@@ -15,12 +13,9 @@ from core_engine.models.model_definition import (
     SchemaContractMode,
 )
 from core_engine.simulation.impact_analyzer import (
-    AffectedModel,
     ChangeAction,
     ColumnChange,
     ImpactAnalyzer,
-    ImpactReport,
-    ModelRemovalReport,
     ReferenceSeverity,
     _is_type_compatible,
 )

@@ -19,16 +19,19 @@ RUN mkdir -p /build/core_engine/core_engine && touch /build/core_engine/core_eng
     mkdir -p /build/api/api && touch /build/api/api/__init__.py && \
     mkdir -p /build/cli/cli && touch /build/cli/cli/__init__.py
 
-# Install only production dependencies for ai_engine
-ENV UV_SYSTEM_PYTHON=1
+# Install only production dependencies for ai_engine into an explicit venv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv sync --package ai-engine --no-dev --frozen
 
 FROM python:3.11-slim@sha256:d6e4d224f70f9e0172a06a3a2eba2f768eb146811a349278b38fff3a36463b47 AS runtime
 
 RUN groupadd -r ironlayer && useradd -r -g ironlayer -d /app ironlayer
 
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Copy the pre-built venv from the builder stage (includes uvicorn + all deps)
+COPY --from=builder /opt/venv /opt/venv
+
+# Add venv to PATH so uvicorn and python are found without absolute paths
+ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 

@@ -40,7 +40,7 @@ async def get_tenant_breakdown(
     _role: Role = Depends(require_permission(Permission.VIEW_ANALYTICS)),
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=100_000),
 ) -> dict[str, Any]:
     """Return per-tenant usage, cost, and billing breakdown.
 

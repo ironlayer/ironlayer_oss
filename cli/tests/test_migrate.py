@@ -27,7 +27,8 @@ from core_engine.models.model_definition import (
     ModelKind,
 )
 
-from cli.app import _extract_sql_table_refs, _generate_ironlayer_file, app
+from cli.app import app
+from cli.commands.migrate import _extract_sql_table_refs, _generate_ironlayer_file
 from cli.display import display_migration_report
 
 runner = CliRunner()

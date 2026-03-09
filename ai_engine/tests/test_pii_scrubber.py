@@ -6,13 +6,16 @@ preserving SQL structure, keywords, and non-sensitive identifiers.
 
 from __future__ import annotations
 
-import pytest
-
 from ai_engine.engines.pii_scrubber import (
     contains_pii,
     scrub_for_llm,
     scrub_sql_for_llm,
 )
+
+# Format-correct fake Databricks PAT: dapi + 32 lowercase hex chars.
+# The real token regex is r"\bdapi[a-f0-9]{32}\b" — this string satisfies it.
+# Do NOT use "dapi_FAKE_TOKEN_FOR_TESTING" — underscores fail the hex-only pattern.
+_FAKE_DAPI = "dapi" + "a" * 32
 
 # ================================================================== #
 # Email scrubbing
@@ -96,14 +99,14 @@ class TestSQLLiteralScrubbing:
 
 class TestDatabricksTokenScrubbing:
     def test_dapi_token_scrubbed(self):
-        text = "token=dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for auth"
+        text = f"token={_FAKE_DAPI} for auth"
         result = scrub_for_llm(text)
-        assert "dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in result
+        assert _FAKE_DAPI not in result
 
     def test_dapi_in_sql_context(self):
-        sql = "-- token: dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nSELECT 1"
+        sql = f"-- token: {_FAKE_DAPI}\nSELECT 1"
         result = scrub_sql_for_llm(sql)
-        assert "dapi" not in result.lower() or "<TOKEN>" in result
+        assert _FAKE_DAPI not in result
 
 
 # ================================================================== #
@@ -148,7 +151,7 @@ class TestContainsPII:
         assert contains_pii("user@example.com") is True
 
     def test_token_detected(self):
-        assert contains_pii("dapiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is True
+        assert contains_pii(_FAKE_DAPI) is True
 
     def test_sql_literal_detected(self):
         assert contains_pii("WHERE name = 'Alice'") is True

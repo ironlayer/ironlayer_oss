@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from core_engine.executor.retry import (
     RetryConfig,
     _compute_delay,

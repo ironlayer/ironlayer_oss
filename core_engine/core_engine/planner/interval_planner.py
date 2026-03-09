@@ -24,7 +24,6 @@ import logging
 from datetime import date, timedelta
 
 import networkx as nx
-from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 from pydantic import BaseModel, Field
 
 from core_engine.contracts.schema_validator import ContractValidationResult
@@ -38,6 +37,7 @@ from core_engine.models.plan import (
     PlanSummary,
     RunType,
 )
+from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 from core_engine.telemetry.profiling import profile_operation
 
 logger = logging.getLogger(__name__)

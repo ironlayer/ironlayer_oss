@@ -14,13 +14,10 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timezone
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from api.config import APISettings
 from api.services.execution_service import ExecutionService

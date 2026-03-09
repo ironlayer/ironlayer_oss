@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import bcrypt
 from sqlalchemy import delete, select
@@ -286,7 +286,7 @@ class GitHubWebhookService:
                 WebhookConfigTable.tenant_id == self._tenant_id,
             )
         )
-        return result.rowcount > 0  # type: ignore[attr-defined]
+        return cast(bool, result.rowcount > 0)  # type: ignore[attr-defined]
 
     async def verify_secret(self, config_id: int, payload: bytes, signature: str) -> bool:
         """Verify a webhook signature against the stored secret hash.

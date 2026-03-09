@@ -5,8 +5,23 @@ global:
 scrape_configs:
   - job_name: "ironlayer-api"
     metrics_path: /metrics
+    # BL-116: /metrics requires a bearer token when API_METRICS_TOKEN is set.
+    # Set the same value here as in the API container's API_METRICS_TOKEN env var.
+    # Leave authorization commented out if API_METRICS_TOKEN is unset (open access).
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token
+
     static_configs:
       - targets: ["api:8000"]
         labels:
           service: "api"
+          environment: "dev"
+
+  - job_name: "ironlayer-ai-engine"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ai_service:8001"]
+        labels:
+          service: "ai-engine"
           environment: "dev"

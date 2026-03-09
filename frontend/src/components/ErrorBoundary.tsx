@@ -68,6 +68,55 @@ export default class ErrorBoundary extends Component<Props, State> {
 }
 
 /**
+ * Full-page error fallback for top-level route ErrorBoundaries (BL-114).
+ * Errors in one route are contained here and do not unmount the entire app.
+ * Use as: <ErrorBoundary fallback={<PageErrorFallback />}>...</ErrorBoundary>
+ */
+export function PageErrorFallback() {
+  return (
+    <div className="flex min-h-[80vh] flex-col items-center justify-center gap-6 p-8">
+      <div className="rounded-full bg-red-500/10 p-6">
+        <svg
+          className="h-10 w-10 text-red-400"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
+          />
+        </svg>
+      </div>
+      <div className="text-center">
+        <h2 className="text-2xl font-semibold text-white">Page failed to load</h2>
+        <p className="mt-2 max-w-md text-sm text-gray-400">
+          An unexpected error occurred on this page. The rest of the application is still running.
+          Try going back or reloading this page.
+        </p>
+      </div>
+      <div className="flex gap-3">
+        <button
+          onClick={() => window.history.back()}
+          className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-white/10 transition-all"
+        >
+          Go Back
+        </button>
+        <button
+          onClick={() => window.location.reload()}
+          className="rounded-lg bg-gradient-to-r from-ironlayer-500 to-ironlayer-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-ironlayer-500/25 hover:shadow-ironlayer-500/40 transition-all"
+        >
+          Reload Page
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Compact error fallback for chart/visualization components.
  * Use as: <ErrorBoundary fallback={<ChartErrorFallback />}>
  */

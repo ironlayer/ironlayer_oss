@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -6,7 +19,7 @@ services:
       POSTGRES_USER: ironlayer
       POSTGRES_PASSWORD: ironlayer_dev
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,12 +35,29 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://ironlayer:ironlayer_dev@postgres:5432/ironlayer
-      AI_ENGINE_URL: http://ai_service:8001
-      PLATFORM_ENV: dev
+      API_DATABASE_URL: postgresql+asyncpg://ironlayer:ironlayer_dev@postgres:5432/ironlayer
+      API_AI_ENGINE_URL: http://ai_service:8001
+      API_PLATFORM_ENV: dev
       AI_ENGINE_SHARED_SECRET: ${AI_ENGINE_SHARED_SECRET:-change-me-in-production}
+      REDIS_URL: redis://redis:6379/0
+      # Auth — stable dev secrets so tokens survive container restarts.
+      # Override with real secrets in .env for staging/prod.
+      AUTH_MODE: ${AUTH_MODE:-development}
+      JWT_SECRET: ${JWT_SECRET:-dev-change-me-not-for-production}
+      API_CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-dev-change-me-not-for-production}
+      # Metrics endpoint auth token (BL-116). Set a strong random value in .env.
+      # Prometheus reads the same value from infra/prometheus/metrics_token.
+      API_METRICS_TOKEN: ${API_METRICS_TOKEN:-dev-metrics-token}
+      # Repos: allow access to local projects mounted at /workspace.
+      API_ALLOWED_REPO_BASE: /workspace
+    volumes:
+      # Mount host /tmp so local test projects (e.g. /tmp/ironlayer-test) are
+      # accessible inside the container at /workspace/<project-name>.
+      - /tmp:/workspace:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   ai_service:
@@ -48,7 +78,7 @@ services:
       context: .
       dockerfile: infra/docker/Dockerfile.frontend
     ports:
-      - "3000:3000"
+      - "3002:3000"
     environment:
       VITE_API_URL: http://localhost:8000
     depends_on:
@@ -60,6 +90,7 @@ services:
       - "9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/metrics_token:/etc/prometheus/metrics_token:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -82,6 +113,7 @@ services:
       - prometheus
 
 volumes:
+  redis_data:
   postgres_data:
   prometheus_data:
   grafana_data:

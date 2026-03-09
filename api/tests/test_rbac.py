@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from api.config import APISettings
 from api.dependencies import get_ai_client, get_db_session, get_metering_collector, get_settings, get_tenant_session
@@ -31,10 +32,7 @@ from api.middleware.rbac import (
     ROLE_PERMISSIONS,
     Permission,
     Role,
-    get_user_role,
     parse_role,
-    require_permission,
-    require_role,
     role_has_permission,
 )
 
@@ -202,6 +200,8 @@ def _test_settings() -> APISettings:
         ai_engine_timeout=5.0,
         platform_env="dev",
         cors_origins=["http://localhost:3000"],
+        allowed_repo_base="/",  # tests use /tmp/repo for plan generate
+        jwt_secret=SecretStr("test-secret-key-for-ironlayer-tests"),
     )
 
 
@@ -264,6 +264,23 @@ def rbac_app(
 
     def _override_metering():
         return mock_metering
+
+    # app.state for middleware / request-scoped deps (lifespan does not run under test client)
+    application.state.settings = _test_settings
+    application.state.ai_client = _mock_ai_client
+    application.state.metering = mock_metering
+    application.state.engine = None
+
+    class _MockSessionCM:
+        def __init__(self, session):
+            self._session = session
+        async def __aenter__(self):
+            return self._session
+        async def __aexit__(self, *args):
+            pass
+    _mock_sf = MagicMock()
+    _mock_sf.return_value = _MockSessionCM(_mock_session)
+    application.state.session_factory = _mock_sf
 
     application.dependency_overrides[get_db_session] = _override_session
     application.dependency_overrides[get_tenant_session] = _override_tenant_session
@@ -488,10 +505,10 @@ class TestAdminRole:
 
     @pytest.mark.asyncio
     async def test_admin_can_read_runs(self, rbac_client: AsyncClient) -> None:
-        with patch("api.routers.runs.RunRepository") as MockRepo:
+        with patch("api.routers.runs.RunRepository"):
             mock_result = MagicMock()
             mock_result.scalars.return_value.all.return_value = []
-            rbac_client._transport.app  # noqa: ensure app is accessible
+            rbac_client._transport.app  # noqa: B018 - ensure app is accessible
             # Use a mock session execute that returns empty results.
             resp = await rbac_client.get(
                 "/api/v1/runs",
@@ -547,14 +564,40 @@ class TestDefaultAndInvalidRoles:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_invalid_role_returns_403(self, rbac_client: AsyncClient) -> None:
-        """An unrecognised role claim should result in 403."""
-        resp = await rbac_client.get(
-            "/api/v1/plans",
+    async def test_invalid_role_defaults_to_viewer(self, rbac_client: AsyncClient) -> None:
+        """An unrecognised role claim is normalised to 'viewer' (least privilege).
+
+        BL-061: Rather than rejecting outright, unknown roles default to the
+        lowest-privilege role so that legitimate users with a misconfigured
+        role can still perform read-only operations.  A WARNING is logged so
+        operators can detect unexpected role values in production.
+        """
+        with patch("api.routers.plans.PlanService") as MockService:
+            MockService.return_value.list_plans = AsyncMock(return_value=[])
+            resp = await rbac_client.get(
+                "/api/v1/plans",
+                headers=_auth_header(role="superadmin"),
+            )
+        # Unknown role → viewer → read access allowed.
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_invalid_role_cannot_write(self, rbac_client: AsyncClient) -> None:
+        """An unrecognised role claim (normalised to viewer) cannot mutate data.
+
+        BL-061: The viewer default must still enforce write restrictions.
+        """
+        resp = await rbac_client.post(
+            "/api/v1/plans/generate",
+            json={
+                "repo_path": "/tmp/repo",
+                "base_sha": "aaa",
+                "target_sha": "bbb",
+            },
             headers=_auth_header(role="superadmin"),
         )
+        # viewer cannot create plans → 403.
         assert resp.status_code == 403
-        assert "unrecognised role" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_no_auth_header_returns_401(self, rbac_client: AsyncClient) -> None:

@@ -13,7 +13,7 @@ Covers all auth router endpoints:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -52,7 +52,7 @@ class TestSignup:
             "/api/v1/auth/signup",
             json={
                 "email": "new@example.com",
-                "password": "strongpassword1!",
+                "password": "StrongPassword1!",
                 "display_name": "New User",
             },
         )
@@ -69,7 +69,7 @@ class TestSignup:
         assert resp.cookies.get("refresh_token") == "rt_xxx"
         mock_svc.signup.assert_awaited_once_with(
             email="new@example.com",
-            password="strongpassword1!",
+            password="StrongPassword1!",
             display_name="New User",
         )
 
@@ -90,13 +90,14 @@ class TestSignup:
             "/api/v1/auth/signup",
             json={
                 "email": "exists@example.com",
-                "password": "strongpassword1!",
+                "password": "StrongPassword1!",
                 "display_name": "Dupe User",
             },
         )
 
         assert resp.status_code == 409
-        assert "already exists" in resp.json()["detail"]
+        # Generic auth failure message is returned to avoid leaking account existence
+        assert "Invalid" in resp.json()["detail"] or "credentials" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_weak_password_422(self, client):
@@ -129,7 +130,7 @@ class TestSignup:
             "/api/v1/auth/signup",
             json={
                 "email": "not-an-email",
-                "password": "strongpassword1!",
+                "password": "StrongPassword1!",
                 "display_name": "Test",
             },
         )
@@ -143,12 +144,86 @@ class TestSignup:
             "/api/v1/auth/signup",
             json={
                 "email": "test@example.com",
-                "password": "strongpassword1!",
+                "password": "StrongPassword1!",
                 "display_name": "",
             },
         )
 
         assert resp.status_code == 422
+
+    # BL-071: password complexity validator tests
+
+    @pytest.mark.asyncio
+    async def test_password_no_uppercase_422(self, client):
+        """BL-071: password with no uppercase letter is rejected with 422."""
+        resp = await client.post(
+            "/api/v1/auth/signup",
+            json={
+                "email": "test@example.com",
+                "password": "alllowercase1!",
+                "display_name": "Test",
+            },
+        )
+        assert resp.status_code == 422
+        errors = resp.json()["detail"]
+        assert any("uppercase" in str(e).lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_password_no_lowercase_422(self, client):
+        """BL-071: password with no lowercase letter is rejected with 422."""
+        resp = await client.post(
+            "/api/v1/auth/signup",
+            json={
+                "email": "test@example.com",
+                "password": "ALLUPPERCASE1!",
+                "display_name": "Test",
+            },
+        )
+        assert resp.status_code == 422
+        errors = resp.json()["detail"]
+        assert any("lowercase" in str(e).lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_password_no_digit_or_special_422(self, client):
+        """BL-071: password with only letters but no digit/special char is rejected."""
+        resp = await client.post(
+            "/api/v1/auth/signup",
+            json={
+                "email": "test@example.com",
+                "password": "AllLettersOnly",
+                "display_name": "Test",
+            },
+        )
+        assert resp.status_code == 422
+        errors = resp.json()["detail"]
+        assert any("digit" in str(e).lower() or "special" in str(e).lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_password_with_digit_accepted(self, client):
+        """BL-071: password meeting all complexity rules (digit variant) passes validation."""
+        resp = await client.post(
+            "/api/v1/auth/signup",
+            json={
+                "email": "complexity@example.com",
+                "password": "ValidPass1",
+                "display_name": "Complexity Test",
+            },
+        )
+        # 422 would indicate complexity rejection; anything else means validation passed.
+        assert resp.status_code != 422
+
+    @pytest.mark.asyncio
+    async def test_password_with_special_char_accepted(self, client):
+        """BL-071: password meeting all complexity rules (special char variant) passes validation."""
+        resp = await client.post(
+            "/api/v1/auth/signup",
+            json={
+                "email": "special@example.com",
+                "password": "ValidPass!",
+                "display_name": "Special Test",
+            },
+        )
+        assert resp.status_code != 422
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +324,7 @@ class TestLogin:
         )
 
         assert resp.status_code == 403
-        assert "deactivated" in resp.json()["detail"].lower()
+        assert "Invalid" in resp.json()["detail"] or "credentials" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_missing_email_422(self, client):

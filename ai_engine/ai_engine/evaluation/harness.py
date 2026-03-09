@@ -110,7 +110,7 @@ class EvaluationHarness:
         self._risk_scorer = risk_scorer
         self._optimizer = optimizer
 
-    def run_full_evaluation(
+    async def run_full_evaluation(
         self,
         dataset: GoldDataset | None = None,
         *,
@@ -156,7 +156,7 @@ class EvaluationHarness:
                     schema_diff=entry.schema_diff,
                     llm_enabled=False,
                 )
-                response = self._classifier.classify(request)
+                response = await self._classifier.classify(request)
                 predicted = response.change_type
                 expected = entry.expected_change_type
 
@@ -294,7 +294,7 @@ class EvaluationHarness:
                     sql=entry.new_sql,
                     llm_enabled=False,
                 )
-                response = self._optimizer.optimize(request)
+                response = await self._optimizer.optimize(request)
                 optimizer_successes += 1
 
                 # Check if expected suggestion types appear.

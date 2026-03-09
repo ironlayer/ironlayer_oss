@@ -4,7 +4,6 @@ version = "0.2.0"
 description = "IronLayer Core Engine — deterministic SQL transformation planning and execution"
 requires-python = ">=3.11,<3.13"
 license = "Apache-2.0"
-readme = "README.md"
 authors = [{name = "IronLayer Team"}]
 keywords = ["sql", "databricks", "data-engineering", "transformations", "incremental"]
 classifiers = [

@@ -35,6 +35,13 @@ terraform.tfvars
 .claude/settings.local.json
 .claude/projects/
 
+# Cursor IDE
+.cursor/
+
+# Private governance files (synced from infra repo only)
+BACKLOG.md
+LESSONS.md
+
 # IDE
 .vscode/
 .idea/
@@ -76,6 +83,18 @@ Desktop.ini
 
 # uv
 .python-version
+
+# Rust build artifacts
+target/
+*.so
+*.pyd
+*.dylib
+
+# Maturin / PyO3 wheels
+*.whl
+
+# Prometheus secrets (never commit actual tokens)
+infra/prometheus/metrics_token
 
 # Misc
 *.bak

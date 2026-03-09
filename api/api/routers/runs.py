@@ -6,9 +6,10 @@ import logging
 from typing import Any
 
 from core_engine.state.repository import RunRepository, TelemetryRepository
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from api.dependencies import SessionDep, TenantDep
+from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ async def list_runs(
     model_name: str | None = Query(default=None, description="Filter by model name."),
     status: str | None = Query(default=None, description="Filter by run status."),
     limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=100_000),
 ) -> list[dict[str, Any]]:
     """Return a paginated, optionally filtered list of run records."""
     repo = RunRepository(session, tenant_id=tenant_id)
@@ -107,7 +108,7 @@ async def get_run(
     repo = RunRepository(session, tenant_id=tenant_id)
     row = await repo.get_by_id(run_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        raise not_found_404("Run", run_id)
 
     run_dict = _row_to_dict(row)
 

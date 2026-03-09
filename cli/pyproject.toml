@@ -4,7 +4,6 @@ version = "0.2.0"
 description = "IronLayer CLI — AI-native Databricks transformation control plane"
 requires-python = ">=3.11,<3.13"
 license = "Apache-2.0"
-readme = "README.md"
 authors = [{name = "IronLayer Team"}]
 keywords = ["sql", "databricks", "data-engineering", "transformations", "cli"]
 classifiers = [
@@ -23,6 +22,10 @@ dependencies = [
     "rich>=13.0,<14.0",
     "httpx>=0.27,<1.0",
     "jinja2>=3.1,<4.0",
+    # Secure credential storage via OS keychain (macOS Keychain, GNOME Keyring,
+    # Windows Credential Locker). Falls back to TOML file on headless systems.
+    # BL-105: promoted from optional extra to required dependency.
+    "keyring>=25.0,<26.0",
     # Workspace resolves to local core_engine; CI publish swaps to: ironlayer-core>=0.2.0
     "ironlayer-core",
 ]

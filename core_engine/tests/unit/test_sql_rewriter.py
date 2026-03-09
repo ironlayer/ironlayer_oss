@@ -7,8 +7,6 @@ parse error fallback, and case-insensitive matching.
 
 from __future__ import annotations
 
-import pytest
-
 from core_engine.executor.sql_rewriter import SQLRewriter
 
 # ---------------------------------------------------------------------------

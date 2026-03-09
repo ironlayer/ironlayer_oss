@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
+
+# HSTS max-age: 2 years (≥ 1 year required for HSTS preload list).
+# Applied only in non-dev environments — localhost does not use HTTPS.
+_HSTS_VALUE = "max-age=63072000; includeSubDomains; preload"
 
 # Default CSP directives -- restrictive baseline.
 _DEFAULT_CSP = (
@@ -35,6 +40,16 @@ class ContentSecurityPolicyMiddleware(BaseHTTPMiddleware):
             policy += "; connect-src 'self'"
         self._csp = policy
 
+        # Determine whether to add HSTS and upgrade-insecure-requests (BL-079, BL-104).
+        # Skip on localhost/dev to avoid breaking HTTP-only development workflows.
+        _platform_env = os.environ.get("PLATFORM_ENV", "development").lower()
+        self._add_hsts = _platform_env not in ("development", "dev", "local")
+        # BL-104: In non-dev environments, add upgrade-insecure-requests so that any
+        # http:// subresource references are automatically upgraded to https://.
+        # Belt-and-suspenders alongside HSTS.
+        if self._add_hsts:
+            self._csp += "; upgrade-insecure-requests"
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = self._csp
@@ -42,4 +57,7 @@ class ContentSecurityPolicyMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # BL-079: Add HSTS in non-dev environments to prevent SSL-stripping attacks.
+        if self._add_hsts:
+            response.headers["Strict-Transport-Security"] = _HSTS_VALUE
         return response

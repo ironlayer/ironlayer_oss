@@ -23,7 +23,8 @@ _scorer: FragilityScorer | None = None
 
 def get_scorer() -> FragilityScorer:
     """Return the module-level fragility scorer instance."""
-    assert _scorer is not None, "FragilityScorer not initialised"
+    if _scorer is None:
+        raise RuntimeError("FragilityScorer not initialised")
     return _scorer
 
 

@@ -176,12 +176,19 @@ class TestSaveCloudConfig:
     """Tests for save_cloud_config()."""
 
     def test_creates_config_file(self, tmp_path: Path) -> None:
-        """Should create the config file with cloud credentials."""
+        """Should create the config file with cloud credentials.
+
+        BL-105: When keyring is unavailable (headless fallback), both api_url
+        and api_token are written to the TOML file. When keyring is available,
+        only api_url is written (token stored in OS keychain). We test the
+        headless path by patching _keyring_set to return False.
+        """
         config_dir = tmp_path / ".ironlayer"
         config_file = config_dir / "config.toml"
         with (
             patch("cli.cloud._CONFIG_DIR", config_dir),
             patch("cli.cloud._CONFIG_FILE", config_file),
+            patch("cli.cloud._keyring_set", return_value=False),  # simulate no keyring
         ):
             from cli.cloud import save_cloud_config
 
@@ -225,7 +232,11 @@ class TestSaveCloudConfig:
             assert mode == 0o600
 
     def test_overwrites_existing_config(self, tmp_path: Path) -> None:
-        """Should overwrite an existing config file."""
+        """Should overwrite an existing config file.
+
+        BL-105: Patch _keyring_set to False so token is written to TOML
+        (headless fallback path), allowing us to assert the old token is gone.
+        """
         config_dir = tmp_path / ".ironlayer"
         config_file = config_dir / "config.toml"
         config_dir.mkdir(parents=True)
@@ -234,6 +245,7 @@ class TestSaveCloudConfig:
         with (
             patch("cli.cloud._CONFIG_DIR", config_dir),
             patch("cli.cloud._CONFIG_FILE", config_file),
+            patch("cli.cloud._keyring_set", return_value=False),  # simulate no keyring
         ):
             from cli.cloud import save_cloud_config
 

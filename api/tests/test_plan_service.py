@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -96,14 +96,17 @@ async def test_generate_augmented_plan_success(
     service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
 
     service._run_repo = MagicMock()
-    service._run_repo.get_historical_stats = AsyncMock(
-        return_value={"avg_runtime_seconds": 45.0, "avg_cost_usd": None, "run_count": 5}
+    service._run_repo.get_historical_stats_batch = AsyncMock(
+        return_value={"staging.orders": {"avg_runtime_seconds": 45.0, "avg_cost_usd": None, "run_count": 5}}
     )
-    service._run_repo.count_for_model = AsyncMock(return_value=10)
-    service._run_repo.count_by_status = AsyncMock(return_value=1)
+    service._run_repo.get_failure_rates_batch = AsyncMock(
+        return_value={"staging.orders": 0.1}
+    )
 
     service._model_repo = MagicMock()
-    service._model_repo.get = AsyncMock(return_value=_make_model_row())
+    service._model_repo.get_models_batch = AsyncMock(
+        return_value={"staging.orders": _make_model_row()}
+    )
 
     result = await service.generate_augmented_plan("plan-aug-001")
 
@@ -143,13 +146,17 @@ async def test_generate_augmented_plan_multiple_steps(
     service._plan_repo = MagicMock()
     service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
     service._run_repo = MagicMock()
-    service._run_repo.get_historical_stats = AsyncMock(
-        return_value={"avg_runtime_seconds": None, "avg_cost_usd": None, "run_count": 0}
+    service._run_repo.get_historical_stats_batch = AsyncMock(return_value={})
+    service._run_repo.get_failure_rates_batch = AsyncMock(
+        return_value={"staging.orders": 0.0, "marts.revenue": 0.0}
     )
-    service._run_repo.count_for_model = AsyncMock(return_value=0)
-    service._run_repo.count_by_status = AsyncMock(return_value=0)
     service._model_repo = MagicMock()
-    service._model_repo.get = AsyncMock(return_value=_make_model_row())
+    service._model_repo.get_models_batch = AsyncMock(
+        return_value={
+            "staging.orders": _make_model_row("staging.orders"),
+            "marts.revenue": _make_model_row("marts.revenue"),
+        }
+    )
 
     result = await service.generate_augmented_plan("plan-multi")
 
@@ -186,13 +193,12 @@ async def test_generate_augmented_plan_ai_failure_returns_plan_without_advisory(
     service._plan_repo = MagicMock()
     service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
     service._run_repo = MagicMock()
-    service._run_repo.get_historical_stats = AsyncMock(
-        return_value={"avg_runtime_seconds": None, "avg_cost_usd": None, "run_count": 0}
-    )
-    service._run_repo.count_for_model = AsyncMock(return_value=0)
-    service._run_repo.count_by_status = AsyncMock(return_value=0)
+    service._run_repo.get_historical_stats_batch = AsyncMock(return_value={})
+    service._run_repo.get_failure_rates_batch = AsyncMock(return_value={"staging.orders": 0.0})
     service._model_repo = MagicMock()
-    service._model_repo.get = AsyncMock(return_value=_make_model_row())
+    service._model_repo.get_models_batch = AsyncMock(
+        return_value={"staging.orders": _make_model_row()}
+    )
 
     result = await service.generate_augmented_plan("plan-aug-001")
 
@@ -222,13 +228,12 @@ async def test_generate_augmented_plan_partial_ai_failure(
     service._plan_repo = MagicMock()
     service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
     service._run_repo = MagicMock()
-    service._run_repo.get_historical_stats = AsyncMock(
-        return_value={"avg_runtime_seconds": None, "avg_cost_usd": None, "run_count": 0}
-    )
-    service._run_repo.count_for_model = AsyncMock(return_value=0)
-    service._run_repo.count_by_status = AsyncMock(return_value=0)
+    service._run_repo.get_historical_stats_batch = AsyncMock(return_value={})
+    service._run_repo.get_failure_rates_batch = AsyncMock(return_value={"staging.orders": 0.0})
     service._model_repo = MagicMock()
-    service._model_repo.get = AsyncMock(return_value=_make_model_row())
+    service._model_repo.get_models_batch = AsyncMock(
+        return_value={"staging.orders": _make_model_row()}
+    )
 
     result = await service.generate_augmented_plan("plan-aug-001")
 
@@ -377,26 +382,25 @@ async def test_list_plans_pagination_offset(
     mock_session: AsyncMock,
     mock_ai_client: AsyncMock,
 ) -> None:
-    """list_plans applies offset by slicing the result set."""
+    """list_plans delegates offset to the repository for SQL-level pagination."""
     settings = _make_settings()
+    # The repository is now called with limit and offset; it returns only the
+    # page the DB selected — the service no longer slices in Python.
     rows = [
-        _make_plan_row("plan-1"),
         _make_plan_row("plan-2"),
-        _make_plan_row("plan-3"),
     ]
 
     service = PlanService(mock_session, mock_ai_client, settings)
     service._plan_repo = MagicMock()
     service._plan_repo.list_recent = AsyncMock(return_value=rows)
 
-    # Offset 1, limit 1 should return only plan-2
     result = await service.list_plans(limit=1, offset=1)
 
     assert len(result) == 1
     assert result[0]["plan_id"] == "plan-2"
 
-    # list_recent is called with limit + offset
-    service._plan_repo.list_recent.assert_awaited_once_with(limit=2)
+    # list_recent is called with both limit and offset at SQL level
+    service._plan_repo.list_recent.assert_awaited_once_with(limit=1, offset=1)
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +427,11 @@ async def test_generate_augmented_plan_skips_empty_model_name(
     service = PlanService(mock_session, mock_ai_client, settings)
     service._plan_repo = MagicMock()
     service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
+    service._run_repo = MagicMock()
+    service._run_repo.get_historical_stats_batch = AsyncMock(return_value={})
+    service._run_repo.get_failure_rates_batch = AsyncMock(return_value={})
+    service._model_repo = MagicMock()
+    service._model_repo.get_models_batch = AsyncMock(return_value={})
 
     result = await service.generate_augmented_plan("plan-empty")
 
@@ -433,3 +442,85 @@ async def test_generate_augmented_plan_skips_empty_model_name(
     mock_ai_client.semantic_classify.assert_not_awaited()
     mock_ai_client.predict_cost.assert_not_awaited()
     mock_ai_client.score_risk.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# BL-062: batch pre-loading in generate_augmented_plan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_augmented_plan_uses_batch_preload(
+    mock_session: AsyncMock,
+    mock_ai_client: AsyncMock,
+) -> None:
+    """generate_augmented_plan pre-loads all data via batch methods (not N+1)."""
+    settings = _make_settings()
+    plan_data = {
+        "plan_id": "plan-batch",
+        "steps": [
+            {"step_id": "s1", "model": "m.alpha", "reason": "changed"},
+            {"step_id": "s2", "model": "m.beta", "reason": "upstream"},
+        ],
+        "summary": {"total_steps": 2, "estimated_cost_usd": 0, "models_changed": ["m.alpha", "m.beta"]},
+    }
+    plan_row = _make_plan_row("plan-batch", plan_data)
+
+    service = PlanService(mock_session, mock_ai_client, settings)
+    service._plan_repo = MagicMock()
+    service._plan_repo.get_plan = AsyncMock(return_value=plan_row)
+
+    service._run_repo = MagicMock()
+    service._run_repo.get_historical_stats_batch = AsyncMock(
+        return_value={
+            "m.alpha": {"avg_runtime_seconds": 10.0, "avg_cost_usd": 0.5, "run_count": 3},
+            "m.beta": {"avg_runtime_seconds": 20.0, "avg_cost_usd": 1.0, "run_count": 2},
+        }
+    )
+    service._run_repo.get_failure_rates_batch = AsyncMock(
+        return_value={"m.alpha": 0.0, "m.beta": 0.25}
+    )
+
+    service._model_repo = MagicMock()
+    service._model_repo.get_models_batch = AsyncMock(
+        return_value={
+            "m.alpha": _make_model_row("m.alpha"),
+            "m.beta": _make_model_row("m.beta"),
+        }
+    )
+
+    result = await service.generate_augmented_plan("plan-batch")
+
+    # Each step produces advisory data.
+    assert result["advisory"] is not None
+    assert "m.alpha" in result["advisory"]
+    assert "m.beta" in result["advisory"]
+
+    # Batch methods were each called exactly once (not once per step).
+    service._run_repo.get_historical_stats_batch.assert_awaited_once()
+    service._run_repo.get_failure_rates_batch.assert_awaited_once()
+    service._model_repo.get_models_batch.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# BL-063: list_plans passes offset to repository (SQL-level pagination)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_plans_passes_limit_and_offset_to_repo(
+    mock_session: AsyncMock,
+    mock_ai_client: AsyncMock,
+) -> None:
+    """list_plans forwards both limit and offset to the repository for SQL pagination."""
+    settings = _make_settings()
+
+    service = PlanService(mock_session, mock_ai_client, settings)
+    service._plan_repo = MagicMock()
+    service._plan_repo.list_recent = AsyncMock(return_value=[_make_plan_row("plan-x")])
+
+    result = await service.list_plans(limit=5, offset=3)
+
+    assert len(result) == 1
+    # Verify offset is passed to the repo, not handled in Python.
+    service._plan_repo.list_recent.assert_awaited_once_with(limit=5, offset=3)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from core_engine.executor.cluster_templates import (
     ClusterTemplates,
     get_cluster_spec,

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from core_engine.license.feature_flags import Feature, LicenseTier
 from core_engine.license.license_manager import (
     LicenseExpiredError,
@@ -34,7 +33,7 @@ def _make_license_data(
     tenant_id: str = "test-tenant",
 ) -> dict:
     """Build a license data dict (unsigned)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "license_id": "lic-test-001",
         "tenant_id": tenant_id,
@@ -223,7 +222,7 @@ class TestExpiry:
     def test_just_expired_rejected(self) -> None:
         data = _make_license_data()
         # Set expires_at to 1 second ago.
-        data["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        data["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
 
         manager = LicenseManager(public_key_bytes=None)
         with pytest.raises(LicenseExpiredError):

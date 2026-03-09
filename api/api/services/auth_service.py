@@ -7,18 +7,23 @@ API key lifecycle.  Uses the existing :class:`TokenManager` from
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from typing import Any
 
+from datetime import UTC, datetime
+
 from core_engine.state.repository import (
     APIKeyRepository,
     TenantConfigRepository,
+    TokenRevocationRepository,
     UserRepository,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.security import AuthMode, TokenConfig, TokenManager
+from api.security import TokenManager
+from api.services.audit_service import AuditAction, AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -46,41 +51,16 @@ class AuthService:
         self,
         session: AsyncSession,
         token_manager: TokenManager | None = None,
+        settings: Any = None,
     ) -> None:
         self._session = session
-        self._tm = token_manager or self._default_token_manager()
-
-    @staticmethod
-    def _default_token_manager() -> TokenManager:
-        """Build a TokenManager from environment variables.
-
-        In dev mode, generates a random per-process secret if JWT_SECRET
-        is not set.  In all other modes, JWT_SECRET must be set explicitly.
-        """
-        import os
-        import secrets as _secrets
-
-        from pydantic import SecretStr
-
-        auth_mode_raw = os.environ.get("AUTH_MODE", "development").lower()
-        try:
-            auth_mode = AuthMode(auth_mode_raw)
-        except ValueError:
-            auth_mode = AuthMode.DEVELOPMENT
-
-        jwt_secret_value = os.environ.get("JWT_SECRET", "")
-        if not jwt_secret_value:
-            if auth_mode == AuthMode.DEVELOPMENT:
-                jwt_secret_value = f"dev-{_secrets.token_hex(32)}"
-            else:
-                raise RuntimeError(f"JWT_SECRET environment variable must be set when AUTH_MODE={auth_mode.value}.")
-
-        return TokenManager(
-            TokenConfig(
-                auth_mode=auth_mode,
-                jwt_secret=SecretStr(jwt_secret_value),
-            )
-        )
+        if token_manager is not None:
+            self._tm = token_manager
+        elif settings is not None:
+            from api.middleware.auth import _build_token_config_from_settings
+            self._tm = TokenManager(_build_token_config_from_settings(settings))
+        else:
+            raise TypeError("AuthService requires either token_manager or settings")
 
     # ------------------------------------------------------------------
     # Signup
@@ -169,8 +149,19 @@ class AuthService:
         self,
         email: str,
         password: str,
+        *,
+        ip: str | None = None,
     ) -> dict[str, Any]:
         """Validate credentials and return a token pair.
+
+        Parameters
+        ----------
+        email:
+            The user's email address.
+        password:
+            The user's plaintext password (never stored).
+        ip:
+            The client IP address, included in the audit log on failure.
 
         Returns a dict with ``user``, ``access_token``, ``refresh_token``,
         and ``tenant_id``.
@@ -180,6 +171,29 @@ class AuthService:
         user = await user_repo.verify_password(email, password)
 
         if user is None:
+            # Write audit log for failed authentication attempt.
+            # entity_id is SHA-256(email) — never the plaintext — to avoid
+            # leaking user data into the audit trail.  A single generic reason
+            # is used regardless of whether the email was not found or the
+            # password was wrong, preventing oracle attacks.
+            email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
+            audit_meta: dict[str, Any] = {
+                "reason": "invalid_credentials",
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            if ip is not None:
+                audit_meta["ip"] = ip
+            audit_svc = AuditService(
+                self._session,
+                tenant_id="__auth__",
+                actor="unauthenticated",
+            )
+            await audit_svc.log(
+                AuditAction.AUTH_FAILED,
+                entity_type="user",
+                entity_id=email_hash,
+                **audit_meta,
+            )
             raise AuthError(
                 "Invalid email or password.",
                 status_code=401,
@@ -231,18 +245,39 @@ class AuthService:
         Returns a dict with ``access_token`` and ``refresh_token``.
         """
         try:
-            claims = self._tm.validate_token(refresh_token)
+            claims = await self._tm.validate_token_async(refresh_token)
         except PermissionError as exc:
             raise AuthError(str(exc), status_code=401) from exc
 
         if "refresh" not in claims.scopes:
             raise AuthError("Not a valid refresh token.", status_code=401)
 
+        # Check revocation BEFORE issuing new tokens (covers both /refresh and /session).
+        # The /auth/session endpoint is a public path and therefore bypasses the
+        # auth middleware's revocation check.  Without this explicit check a
+        # logged-out or admin-revoked refresh token could still restore a session.
+        revocation_repo = TokenRevocationRepository(self._session, tenant_id=claims.tenant_id)
+        if await revocation_repo.is_revoked(claims.jti):
+            raise AuthError("Invalid or expired token.", status_code=401)
+
         # Verify the user still exists and is active.
         user_repo = UserRepository(self._session, tenant_id=claims.tenant_id)
         user = await user_repo.get_by_id(claims.sub)
         if user is None or not user.is_active:
             raise AuthError("User account not found or deactivated.", status_code=401)
+
+        # Revoke the consumed refresh token before issuing a new pair (BL-051).
+        # This prevents refresh token reuse: once a token has been exchanged for
+        # a new pair, the old token is immediately invalidated in the revocation
+        # store.  Without this, a stolen refresh token remains usable until its
+        # natural expiry even after the legitimate user has already rotated.
+        # (revocation_repo already constructed above for the pre-check.)
+        old_expires_at = datetime.fromtimestamp(claims.exp, tz=UTC)
+        await revocation_repo.revoke(
+            jti=claims.jti,
+            reason="refresh_rotation",
+            expires_at=old_expires_at,
+        )
 
         # Generate new token pair.
         new_access = self._tm.generate_token(

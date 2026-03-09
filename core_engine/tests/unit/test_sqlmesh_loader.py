@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
-
 from core_engine.loader.sqlmesh_loader import (
+    _KIND_MAP,
     SQLMeshLoadError,
+    _parse_model_block,
     discover_sqlmesh_project,
     load_models_from_sqlmesh_project,
-    _parse_model_block,
-    _parse_sql_model_file,
-    _KIND_MAP,
 )
-from core_engine.models.model_definition import ModelKind, Materialization
+from core_engine.models.model_definition import Materialization, ModelKind
 
 # ---------------------------------------------------------------------------
 # discover_sqlmesh_project

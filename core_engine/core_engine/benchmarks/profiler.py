@@ -115,11 +115,11 @@ class BenchmarkProfiler:
 
         Builds the DAG first (not timed), then times only the sort.
         """
-        from core_engine.graph.dag_builder import build_dag
+        from core_engine.graph.dag_builder import build_dag, topological_sort
 
         dag = build_dag(models)
 
-        _, duration_ms, peak_mb = _time_call(dag.topological_sort)
+        _, duration_ms, peak_mb = _time_call(lambda: topological_sort(dag))
 
         throughput = (len(models) / (duration_ms / 1000)) if duration_ms > 0 else 0.0
 

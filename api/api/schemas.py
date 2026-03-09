@@ -6,9 +6,44 @@ in the OpenAPI specification.  Routers import from here to avoid duplication.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
+
+T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# Cursor pagination (BL-120)
+# ---------------------------------------------------------------------------
+
+
+class CursorPage(BaseModel, Generic[T]):
+    """Keyset-paginated response envelope.
+
+    ``next_cursor`` is a base64-encoded opaque token representing the last
+    item in the current page.  Pass it as ``?cursor=<token>`` on the next
+    request to retrieve the following page.  ``None`` means you are on the
+    last page.
+
+    Unlike offset-based pagination, keyset cursors are O(1) regardless of
+    page position because the database uses an indexed ``WHERE id < :cursor``
+    predicate instead of ``OFFSET N``.
+
+    ``total_hint`` is an optional approximate row count.  It may be stale
+    (computed from statistics) and should only be used for UI display, not
+    for determining whether more pages exist.
+    """
+
+    items: list[T]
+    next_cursor: str | None = Field(
+        None,
+        description="Opaque cursor for the next page. None when this is the last page.",
+    )
+    total_hint: int | None = Field(
+        None,
+        description="Approximate total row count (may be stale). For display only.",
+    )
 
 # ---------------------------------------------------------------------------
 # Plan schemas

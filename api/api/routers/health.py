@@ -1,10 +1,16 @@
 """Health-check and readiness probe endpoints.
 
 The ``/health`` endpoint (liveness) is registered under the versioned API
-prefix (``/api/v1/health``).  The ``/ready`` endpoint is a Kubernetes-style
-readiness probe registered at the application root (no version prefix) so
-that orchestrators and load-balancers can gate traffic independently of the
-API version.
+prefix (``/api/v1/health``).  It returns a minimal response so that
+infrastructure does not leak version or dependency information to
+unauthenticated callers.
+
+The ``/health/detailed`` endpoint requires admin-level authentication and
+returns version and dependency status information.
+
+The ``/ready`` endpoint is a Kubernetes-style readiness probe registered at
+the application root (no version prefix) so that orchestrators and
+load-balancers can gate traffic independently of the API version.
 """
 
 from __future__ import annotations
@@ -19,7 +25,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api import __version__
-from api.dependencies import AIClientDep, get_db_session
+from api.dependencies import AdminSessionDep, AIClientDep, get_db_session
+from api.middleware.rbac import Permission, Role, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +48,34 @@ async def _check_ai_health(ai_client: AIClientDep) -> bool:
 
 
 @router.get("/health")
-async def health(
-    session: HealthSessionDep,
-    ai_client: AIClientDep,
-) -> dict[str, Any]:
-    """Return service health with optional dependency checks.
+async def health() -> dict[str, Any]:
+    """Return minimal liveness signal.
 
-    The endpoint always returns HTTP 200 so that load-balancers see the
-    service as alive.  The ``db`` and ``ai_engine`` fields indicate
-    whether downstream dependencies are reachable.
+    This endpoint is intentionally stripped of version and dependency
+    information so that unauthenticated callers (Docker HEALTHCHECK,
+    load-balancers) cannot fingerprint the service for CVE targeting.
+
+    Always returns HTTP 200 with ``{"status": "ok"}``.
+    """
+    return {"status": "ok"}
+
+
+@router.get("/health/detailed")
+async def health_detailed(
+    session: AdminSessionDep,
+    ai_client: AIClientDep,
+    _role: Role = Depends(require_permission(Permission.VIEW_ANALYTICS)),
+) -> dict[str, Any]:
+    """Return detailed service health including version and dependency status.
+
+    Requires ``VIEW_ANALYTICS`` (admin-level) permission.  Returns the full
+    dependency status so operators can diagnose issues without exposing
+    information publicly.
+
+    The endpoint always returns HTTP 200 so that callers can distinguish
+    auth failures (401/403) from actual health data.  The ``db`` and
+    ``ai_engine`` fields indicate whether downstream dependencies are
+    reachable.
     """
     result: dict[str, Any] = {
         "status": "healthy",
@@ -64,10 +90,13 @@ async def health(
     except Exception as exc:
         logger.warning("DB health check failed: %s", exc)
         result["db"] = "degraded"
+        result["status"] = "degraded"
 
     # AI engine connectivity check (graceful degradation, short timeout).
     if not await _check_ai_health(ai_client):
         result["ai_engine"] = "unavailable"
+        if result["status"] == "healthy":
+            result["status"] = "degraded"
 
     return result
 

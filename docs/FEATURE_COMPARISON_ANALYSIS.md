@@ -1,7 +1,7 @@
 # Iron Layer vs. DBT Cloud, DBT Core, DBT Fusion, SQLMesh & Meltano — Feature Comparison
 
 **Deep-dive analysis of features and functionalities with overlap matrix.**  
-*Generated from ironlayer_infra codebase and public documentation of comparison tools.*
+*Generated from IronLayer codebase and public documentation of comparison tools.*
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 2. Iron Layer — Full Feature & Functionality List
 
-*Source: ironlayer_infra codebase and docs.*
+*Source: IronLayer codebase and docs.*
 
 ### 2.1 Core transformation & planning
 
@@ -291,7 +291,7 @@
 
 ## 6. References
 
-- **Iron Layer:** ironlayer_infra repo — README, docs/architecture.md, docs/cli-reference.md, core_engine, api, cli, frontend, ai_engine.
+- **Iron Layer:** IronLayer OSS repo — README, docs/architecture.md, docs/cli-reference.md, core_engine, api, cli, frontend, ai_engine.
 - **DBT Cloud:** [dbt Cloud release notes](https://docs.getdbt.com/docs/dbt-versions/dbt-cloud-release-notes), [What's new (2025)](https://www.getdbt.com/blog/whats-new-in-dbt-cloud-april-2025).
 - **DBT Core:** [Introduction](https://docs.getdbt.com/docs/introduction), [Core vs Cloud](https://www.getdbt.com/blog/how-we-think-about-dbt-core-and-dbt-cloud).
 - **DBT Fusion:** [About Fusion](https://docs.getdbt.com/docs/fusion/about-fusion), [Supported features](https://docs.getdbt.com/docs/fusion/supported-features).

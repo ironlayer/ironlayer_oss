@@ -13,7 +13,6 @@ Marked with ``@pytest.mark.benchmark`` so they can be run selectively::
 from __future__ import annotations
 
 import pytest
-
 from core_engine.benchmarks.graph_generator import SyntheticGraphGenerator
 from core_engine.benchmarks.profiler import BenchmarkProfiler, BenchmarkResult
 

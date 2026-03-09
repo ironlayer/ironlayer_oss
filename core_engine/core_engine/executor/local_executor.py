@@ -18,9 +18,9 @@ from uuid import uuid4
 import duckdb
 
 from core_engine.models.plan import PlanStep, RunType
-from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 from core_engine.models.run import RunRecord, RunStatus
 from core_engine.parser.sql_guard import SQLGuardConfig, assert_sql_safe
+from core_engine.sql_toolkit import Dialect, get_sql_toolkit
 
 logger = logging.getLogger(__name__)
 

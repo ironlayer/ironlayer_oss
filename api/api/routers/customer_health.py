@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.dependencies import AdminSessionDep
+from api.http_errors import not_found_404
 from api.middleware.rbac import Permission, Role, require_permission
 from api.services.customer_health_service import CustomerHealthService
 
@@ -26,7 +27,7 @@ async def list_tenants(
     status: str | None = Query(None, description="Filter by health status: active, at_risk, churning"),
     sort_by: str = Query("health_score", description="Sort by: health_score, health_score_desc, updated_at, tenant_id"),
     limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=100_000),
 ) -> dict[str, Any]:
     """List all tenants with health scores, filterable by status.
 
@@ -59,7 +60,11 @@ async def get_tenant_health(
     service = CustomerHealthService(session)
     detail = await service.get_health_detail(tenant_id)
     if detail is None:
-        raise HTTPException(status_code=404, detail=f"No health data for tenant '{tenant_id}'")
+        raise not_found_404(
+            "Health data for tenant",
+            tenant_id,
+            hint="Health may not have been computed yet. Use POST /api/v1/admin/health/compute to trigger computation.",
+        )
     return detail
 
 

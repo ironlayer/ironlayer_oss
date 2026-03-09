@@ -345,6 +345,7 @@ class SyntheticGraphGenerator:
 
             # Pick SQL template.
             if not deps:
+                template = _SIMPLE_SELECT
                 sql = _SIMPLE_SELECT.format(
                     columns=cols_str,
                     source="raw_data.source_table",

@@ -11,7 +11,6 @@ Covers:
 from __future__ import annotations
 
 import pytest
-
 from core_engine.loader.model_loader import (
     HeaderParseError,
     _parse_test_declarations,

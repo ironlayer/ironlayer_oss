@@ -48,7 +48,29 @@ class ValidationResult:
 # ---------------------------------------------------------------------------
 
 # Statement types that are safe to execute in the DuckDB sandbox.
-_SAFE_STATEMENT_TYPES = frozenset({"Select", "Explain"})
+# Note: in sqlglot >=27, EXPLAIN falls back to "Command" — include both names
+# for forward/backward compatibility across sqlglot minor versions.
+_SAFE_STATEMENT_TYPES = frozenset({"Select", "Explain", "Command"})
+
+# Recognized top-level SQL statement types.  Used by _validate_syntax to
+# distinguish a genuine SQL statement from arbitrary text that sqlglot's
+# permissive parser accepts without error (e.g. "THIS IS NOT SQL" parses as
+# column references).  Only text whose root AST node is one of these types
+# passes Gate 1.
+_SQL_STATEMENT_TYPES = (
+    sqlglot_exp.Select,
+    sqlglot_exp.Insert,
+    sqlglot_exp.Update,
+    sqlglot_exp.Delete,
+    sqlglot_exp.Create,
+    sqlglot_exp.Drop,
+    sqlglot_exp.Merge,
+    sqlglot_exp.With,
+    sqlglot_exp.Union,
+    sqlglot_exp.Except,
+    sqlglot_exp.Intersect,
+    sqlglot_exp.Command,  # covers EXPLAIN, SHOW, SET, and other SQL commands
+)
 
 
 def _is_safe_sql(sql: str) -> bool:
@@ -69,7 +91,7 @@ def _is_safe_sql(sql: str) -> bool:
             if stmt_type not in _SAFE_STATEMENT_TYPES:
                 return False
         return True
-    except Exception:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError):
         return False
 
 
@@ -162,11 +184,24 @@ class SuggestionValidator:
 
     @staticmethod
     def _validate_syntax(sql: str) -> bool:
-        """Return True if the SQL parses successfully via sqlglot."""
+        """Return True only if sql parses as a recognized SQL statement type.
+
+        Uses sqlglot.parse (returns a list of statements) rather than
+        parse_one so we can check the root node type.  Plain English phrases
+        like "THIS IS NOT SQL" parse without error in sqlglot (treated as
+        column references), but their root node is not a recognized statement
+        type, so they are rejected here.
+        """
         try:
-            sqlglot.parse_one(sql, read="databricks")
-            return True
-        except sqlglot.errors.ParseError as exc:
+            statements = sqlglot.parse(sql, dialect="databricks")
+            if not statements:
+                return False
+            return any(
+                isinstance(stmt, _SQL_STATEMENT_TYPES)
+                for stmt in statements
+                if stmt is not None
+            )
+        except (sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError) as exc:
             logger.debug("Syntax validation failed: %s", exc)
             return False
 

@@ -21,22 +21,18 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr, ValidationError
-from starlette.requests import Request
-from starlette.testclient import TestClient
 
 from api.middleware.rbac import (
     Permission,
     Role,
-    get_user_role,
     require_permission,
     require_role,
     role_has_permission,
 )
 from api.routers.tenant_config import _redact_key
-from api.security import OIDCProvider, TokenClaims, TokenConfig, TokenManager
+from api.security import OIDCProvider, TokenConfig
 from core_engine.state.database import _TENANT_ID_RE, set_tenant_context
 
 # ---------------------------------------------------------------------------
@@ -239,7 +235,8 @@ class TestOIDCAlgorithmHardcoded:
     token header to exploit algorithm confusion must be rejected.
     """
 
-    def test_validate_token_uses_rs256_only(self) -> None:
+    @pytest.mark.asyncio
+    async def test_validate_token_uses_rs256_only(self) -> None:
         """The jwt.decode call must be hardcoded to RS256 only.
 
         We mock the jwt module to intercept the decode() call and verify
@@ -268,13 +265,14 @@ class TestOIDCAlgorithmHardcoded:
                 "exp": time.time() + 3600,
             }
 
-            provider.validate_token("fake.jwt.token")
+            await provider.validate_token("fake.jwt.token")
 
             # Verify that algorithms is hardcoded to RS256.
             call_kwargs = mock_decode.call_args
             assert call_kwargs[1]["algorithms"] == ["RS256"]
 
-    def test_alg_from_header_is_ignored(self) -> None:
+    @pytest.mark.asyncio
+    async def test_alg_from_header_is_ignored(self) -> None:
         """Even if the token header says HS256, the provider must use RS256.
 
         This test verifies the security comment in validate_token():
@@ -301,7 +299,7 @@ class TestOIDCAlgorithmHardcoded:
                 "iss": "https://auth.example.com",
             }
 
-            provider.validate_token("fake.jwt.token")
+            await provider.validate_token("fake.jwt.token")
 
             # The algorithms kwarg must NOT contain HS256.
             algorithms_used = mock_decode.call_args[1]["algorithms"]
