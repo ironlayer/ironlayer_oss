@@ -244,3 +244,139 @@ groups:
           description: >
             Less than 10% disk space remaining on the PostgreSQL data volume.
             Risk of write failures and data corruption within hours.
+
+  # ---------------------------------------------------------------------------
+  # Frontend (Nginx) — Availability
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.frontend.availability
+    interval: 1m
+    rules:
+
+      # Fast-burn: >14.4× error budget consumed → ~1 hour until budget exhausted.
+      - alert: FrontendHighErrorRateFastBurn
+        expr: |
+          (
+            sum(rate(nginx_http_requests_total{job="ironlayer-frontend",status=~"5.."}[5m]))
+            /
+            sum(rate(nginx_http_requests_total{job="ironlayer-frontend"}[5m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          service: ironlayer-frontend
+          slo: frontend-availability
+        annotations:
+          summary: "Frontend error rate fast-burn ({{ $value | humanizePercentage }})"
+          description: >
+            Nginx 5xx error rate is {{ $value | humanizePercentage }}, which is
+            14.4× the 0.1% error budget.  At this rate the 30-day budget will
+            be exhausted in ~1 hour.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-error-rate"
+
+      # Slow-burn: >6× error budget for 30 minutes → budget exhausted in ~5 hours.
+      - alert: FrontendHighErrorRateSlowBurn
+        expr: |
+          (
+            sum(rate(nginx_http_requests_total{job="ironlayer-frontend",status=~"5.."}[30m]))
+            /
+            sum(rate(nginx_http_requests_total{job="ironlayer-frontend"}[30m]))
+          ) > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: ticket
+          service: ironlayer-frontend
+          slo: frontend-availability
+        annotations:
+          summary: "Frontend error rate slow-burn ({{ $value | humanizePercentage }})"
+          description: >
+            Nginx 5xx error rate has been elevated for 15 min.  Error budget
+            consumption is 6× the target rate.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-error-rate"
+
+  # ---------------------------------------------------------------------------
+  # Frontend (Nginx) — Latency
+  # ---------------------------------------------------------------------------
+  - name: ironlayer.frontend.latency
+    interval: 1m
+    rules:
+
+      # p95 > 2 s for 5 minutes.  Vite hashed assets should be served from
+      # immutable cache (BL-115); sustained high latency indicates CDN/cache
+      # misconfiguration or an upstream Nginx issue.
+      - alert: FrontendHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(nginx_http_request_duration_seconds_bucket{job="ironlayer-frontend"}[5m])
+            )
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: ticket
+          service: ironlayer-frontend
+          slo: frontend-latency
+        annotations:
+          summary: "Frontend p95 latency > 2 s ({{ $value | humanizeDuration }})"
+          description: >
+            Nginx p95 response time has exceeded 2 s for 5 minutes.  Static
+            assets are served with 1-year immutable cache (BL-115); this may
+            indicate a cold-cache storm, missing CDN layer, or excessive
+            JS/CSS bundle size after a bad Vite build.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-latency"
+
+  # ---------------------------------------------------------------------------
+  # Check Engine (Rust CLI / CI batch tool — metrics via Prometheus Pushgateway)
+  # ---------------------------------------------------------------------------
+  # check_engine is not a long-running service.  Alerts in this group fire
+  # against metrics pushed to the Prometheus Pushgateway by the CLI and CI
+  # jobs.  See slos.yml (check-engine-success-rate) for the SLO definition.
+  #
+  # Pushgateway scrape job must be configured in prometheus.yml:
+  #   job_name: ironlayer-check-engine  (honor_labels: true)
+  - name: ironlayer.check_engine
+    interval: 5m
+    rules:
+
+      # Stalled: check_engine hasn't pushed metrics in > 25 hours.
+      # This fires when CI pipelines are broken or the CLI integration is
+      # degraded, preventing routine dbt project validation from running.
+      - alert: CheckEngineStalled
+        expr: |
+          (time() - push_time_seconds{job="ironlayer-check-engine"}) > 90000
+        for: 0m
+        labels:
+          severity: warning
+          service: check-engine
+        annotations:
+          summary: "check_engine has not reported a run in > 25 h"
+          description: >
+            The check_engine CLI has not pushed any metrics to the Pushgateway
+            in over 25 hours.  This may indicate a CI pipeline outage, a broken
+            Pushgateway integration, or that the CLI tool is no longer being
+            used.  Check CI logs and Pushgateway connectivity.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/check-engine-stalled"
+
+      # High error rate: internal engine failures (panics, I/O, timeout)
+      # exceeding 5% of runs in the past hour.  Lint failures that produce
+      # diagnostics are NOT counted as errors — only engine-level failures are.
+      - alert: CheckEngineHighErrorRate
+        expr: |
+          (
+            rate(check_engine_runs_total{job="ironlayer-check-engine",outcome="error"}[1h])
+            /
+            rate(check_engine_runs_total{job="ironlayer-check-engine"}[1h])
+          ) > 0.05
+        for: 15m
+        labels:
+          severity: ticket
+          service: check-engine
+          slo: check-engine-success-rate
+        annotations:
+          summary: "check_engine internal error rate > 5% ({{ $value | humanizePercentage }})"
+          description: >
+            More than 5% of check_engine runs are failing with internal engine
+            errors (Rust panics, I/O failures, or 2-minute timeouts) over the
+            past hour.  Lint warnings returned to the user are not counted.
+            Check CLI error logs, Rust panic output, and CI run artifacts.
+          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/check-engine-errors"

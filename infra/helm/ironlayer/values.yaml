@@ -141,7 +141,7 @@ aiEngine:
 
   readinessProbe:
     httpGet:
-      path: /health
+      path: /readiness  # returns 503 until CostPredictor is warm (BL-100); separate from liveness
       port: http
     initialDelaySeconds: 5
     periodSeconds: 10
@@ -325,6 +325,23 @@ mtls:
     issuerRef:
       name: ironlayer-ca-issuer
       kind: ClusterIssuer
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudgets (BL-109) — prevent simultaneous eviction of all pods.
+# ---------------------------------------------------------------------------
+# PDBs are only created for workloads with replicaCount > 1, so single-replica
+# test environments are unaffected.  Set enabled=false to disable globally.
+pdb:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# NetworkPolicies (BL-110) — enforce least-privilege pod communication.
+# ---------------------------------------------------------------------------
+# Default-deny baseline + per-workload allow rules (see networkpolicy.yaml).
+# Set ingressNamespace to match your ingress controller's namespace.
+networkPolicy:
+  enabled: true
+  ingressNamespace: ingress-nginx  # Override for Traefik, Contour, etc.
 
 # ---------------------------------------------------------------------------
 # Service Account -- shared across workloads unless overridden per-service.

@@ -116,3 +116,55 @@ services:
         total_events: nginx_http_requests_total
       error_budget_minutes_per_month: 43.8
       alert_burn_rates: [14.4, 6, 1]
+
+    - id: frontend-latency
+      name: Frontend p95 Latency
+      description: >
+        p95 Nginx response time for the React SPA, including static asset
+        serving.  Vite produces content-hashed files cached for 1 year with
+        the immutable directive (BL-115), so cache-hits should be served in
+        milliseconds.  The 2 s threshold covers cold-cache and CDN-miss paths.
+      target: 95%
+      window: 30d
+      sli:
+        type: latency
+        histogram: nginx_http_request_duration_seconds_bucket{job="ironlayer-frontend"}
+        threshold_seconds: 2.0
+      alert_burn_rates: [6, 1]
+
+  # ---------------------------------------------------------------------------
+  # Check Engine  (Rust CLI batch tool — metrics via Prometheus Pushgateway)
+  # ---------------------------------------------------------------------------
+  # check_engine is not a long-running service.  It executes in-process
+  # within the developer CLI and in CI validation jobs, then exits.  Metrics
+  # are pushed to the Prometheus Pushgateway after every run so that long-term
+  # trends and outages can be detected.
+  #
+  # Pushgateway scrape job required in prometheus.yml:
+  #   - job_name: ironlayer-check-engine
+  #     honor_labels: true
+  #     static_configs:
+  #       - targets: ["pushgateway:9091"]
+  #
+  # "error" outcomes are internal engine failures (Rust panics, I/O errors,
+  # timeout) — NOT dbt model lint warnings, which are expected outputs.
+  ironlayer-check-engine:
+
+    - id: check-engine-success-rate
+      name: Check Engine Run Success Rate
+      description: >
+        At least 95% of check_engine invocations must complete without an
+        internal engine error (panic, I/O failure, or enforced 2-minute
+        timeout).  Measured over a 7-day rolling window from CLI and CI runs
+        pushed to the Prometheus Pushgateway.  A lint failure that returns
+        diagnostics to the user is a *success* at the engine layer.
+      target: 95%           # 5% of runs per week may fail internally
+      window: 7d            # Weekly window — check_engine runs are batch
+      sli:
+        type: availability
+        good_events: check_engine_runs_total{job="ironlayer-check-engine",outcome="success"}
+        total_events: check_engine_runs_total{job="ironlayer-check-engine"}
+        note: >
+          Metrics are pushed from the CLI (cli/cli/commands/check.py) and CI
+          validation jobs to the Prometheus Pushgateway after each run.
+      alert_burn_rates: [6, 1]

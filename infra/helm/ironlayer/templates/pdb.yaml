@@ -1,0 +1,57 @@
+{{/*
+============================================================================
+PodDisruptionBudgets (BL-109)
+============================================================================
+Ensures at least one replica of each workload remains available during node
+drains, voluntary cluster maintenance, and rolling updates.  Without PDBs,
+a node drain can evict all pods simultaneously, causing a complete outage.
+
+Enabled by default (pdb.enabled=true in values.yaml).  Disable per-workload
+or globally for single-replica test environments where minAvailable=1 would
+block node drains entirely.
+*/}}
+
+{{- if .Values.pdb.enabled }}
+{{- if gt (int .Values.api.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ironlayer.api.fullname" . }}
+  labels:
+    {{- include "ironlayer.api.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "ironlayer.api.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if gt (int .Values.aiEngine.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ironlayer.ai.fullname" . }}
+  labels:
+    {{- include "ironlayer.ai.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "ironlayer.ai.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if gt (int .Values.frontend.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ironlayer.frontend.fullname" . }}
+  labels:
+    {{- include "ironlayer.frontend.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "ironlayer.frontend.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}
