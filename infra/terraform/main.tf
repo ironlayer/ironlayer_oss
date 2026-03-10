@@ -239,12 +239,36 @@ resource "azurerm_key_vault" "this" {
 
   rbac_authorization_enabled = true
 
+  # BL-127: Deny all by default; allow only apps subnet + optional IP allowlist.
   network_acls {
-    default_action = "Allow"
-    bypass         = "AzureServices"
+    default_action             = "Deny"
+    bypass                     = "AzureServices"
+    virtual_network_subnet_ids = [azurerm_subnet.apps.id]
+    ip_rules                   = var.additional_kv_ip_rules
   }
 
   tags = local.common_tags
+}
+
+# --- Key Vault Diagnostic Settings (BL-128) ----------------------------------
+
+resource "azurerm_monitor_diagnostic_setting" "key_vault" {
+  name                       = "${local.name_prefix}-kv-diagnostics"
+  target_resource_id         = azurerm_key_vault.this.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  enabled_log {
+    category = "AzureSDKOperational"
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+  }
 }
 
 # --- Key Vault RBAC: Terraform SP can manage secrets -------------------------
@@ -371,8 +395,11 @@ resource "azurerm_postgresql_flexible_server" "this" {
   administrator_password        = random_password.db_password.result
   storage_mb                    = var.postgresql_storage_mb
   sku_name                      = var.postgresql_sku_name
-  backup_retention_days         = 35
-  geo_redundant_backup_enabled  = var.environment == "production" && !startswith(var.postgresql_sku_name, "B_")
+  # BL-129: Retain 35 days in production, 7 days elsewhere.
+  # Geo-redundant backup enabled for production and staging (not dev) and only
+  # on non-Burstable SKUs which do not support geo-redundancy.
+  backup_retention_days        = var.environment == "production" ? 35 : 7
+  geo_redundant_backup_enabled = var.environment != "development" && !startswith(var.postgresql_sku_name, "B_")
   auto_grow_enabled             = true
 
   zone = "1"
@@ -722,9 +749,10 @@ resource "azurerm_container_app" "ai" {
         failure_count_threshold = 3
       }
 
+      # BL-100: /readiness returns 503 until CostPredictor warms up.
       readiness_probe {
         transport = "HTTP"
-        path      = "/health"
+        path      = "/readiness"
         port      = 8001
 
         interval_seconds        = 10
@@ -732,13 +760,14 @@ resource "azurerm_container_app" "ai" {
         failure_count_threshold = 3
       }
 
+      # BL-147: Startup probe gives the AI engine up to 5 min to load models.
       startup_probe {
         transport = "HTTP"
-        path      = "/health"
+        path      = "/readiness"
         port      = 8001
 
-        interval_seconds        = 5
-        timeout                 = 3
+        interval_seconds        = 10
+        timeout                 = 5
         failure_count_threshold = 30
       }
     }

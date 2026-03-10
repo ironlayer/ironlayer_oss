@@ -37,6 +37,13 @@ from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
+try:
+    from api.middleware.prometheus import RATE_LIMIT_REJECTED_TOTAL, _normalise_path
+
+    _RL_METRICS = True
+except ImportError:
+    _RL_METRICS = False
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -514,6 +521,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 current_count,
                 burst_limit,
             )
+
+            if _RL_METRICS:
+                RATE_LIMIT_REJECTED_TOTAL.labels(endpoint=_normalise_path(path)).inc()
 
             return JSONResponse(
                 status_code=429,

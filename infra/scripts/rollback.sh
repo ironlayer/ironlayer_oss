@@ -57,6 +57,40 @@ fi
 # Acquire lock.
 echo $$ > "${LOCK_FILE}"
 
+cleanup_old_revisions() {
+  # BL-145: Deactivate revisions older than 7 days to keep the revision list clean.
+  local APP="$1"
+  local CUTOFF
+  CUTOFF=$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u --date="7 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "")
+
+  [ -z "$CUTOFF" ] && return 0
+
+  local OLD_REVS
+  OLD_REVS=$(az containerapp revision list \
+    --name "$APP" \
+    --resource-group "$RG" \
+    --query "[?properties.createdTime < '${CUTOFF}'].name" \
+    --output tsv 2>/dev/null || echo "")
+
+  if [ -z "$OLD_REVS" ]; then
+    echo "  No revisions older than 7 days to clean up for ${APP}."
+    return 0
+  fi
+
+  echo "  Deactivating old revisions for ${APP}:"
+  while IFS= read -r rev; do
+    [ -z "$rev" ] && continue
+    echo "    - ${rev}"
+    az containerapp revision deactivate \
+      --name "$APP" \
+      --resource-group "$RG" \
+      --revision "$rev" \
+      --output none 2>/dev/null || echo "    ⚠ Could not deactivate ${rev} (may already be inactive)"
+  done <<< "$OLD_REVS"
+}
+
 rollback_app() {
   local APP="$1"
   echo "─────────────────────────────────────────────────────────"
@@ -92,6 +126,40 @@ rollback_app() {
     --output tsv 2>/dev/null || echo "unknown")
 
   echo "  ✓ ${APP}: ${CURRENT} → 0% traffic, ${PREV} → 100% traffic"
+
+  # BL-145: Resolve the app FQDN and verify the health endpoint responds 200.
+  local APP_FQDN
+  APP_FQDN=$(az containerapp show \
+    --name "$APP" \
+    --resource-group "$RG" \
+    --query "properties.configuration.ingress.fqdn" \
+    --output tsv 2>/dev/null || echo "")
+
+  if [ -n "$APP_FQDN" ]; then
+    echo "  Verifying health at https://${APP_FQDN}/api/v1/health ..."
+    local HEALTH_OK=false
+    for i in 1 2 3; do
+      STATUS=$(curl -sf -o /dev/null -w '%{http_code}' \
+        --max-time 5 \
+        "https://${APP_FQDN}/api/v1/health" 2>/dev/null || echo "000")
+      if [ "$STATUS" = "200" ]; then
+        echo "  ✓ Health check passed after rollback (HTTP 200)"
+        HEALTH_OK=true
+        break
+      fi
+      echo "  Attempt ${i}/3: HTTP ${STATUS}, retrying in 5s..."
+      sleep 5
+    done
+    if [ "$HEALTH_OK" != "true" ]; then
+      echo "  ✗ Post-rollback health check failed — service may be degraded."
+      return 1
+    fi
+  else
+    echo "  ⚠ Could not resolve FQDN for ${APP} — skipping post-rollback health check"
+  fi
+
+  # BL-145: Clean up stale revisions.
+  cleanup_old_revisions "$APP"
 }
 
 echo "═══════════════════════════════════════════════════════════"

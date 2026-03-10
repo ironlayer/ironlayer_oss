@@ -64,6 +64,10 @@ spec:
                   name: {{ include "ironlayer.secretName" . }}
                   key: llm-api-key
             {{- end }}
+          {{- if .Values.aiEngine.startupProbe }}
+          startupProbe:
+            {{- toYaml .Values.aiEngine.startupProbe | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.aiEngine.livenessProbe | nindent 12 }}
           readinessProbe:

@@ -44,8 +44,8 @@ try:
 
     AI_CALLS_TOTAL = Counter(
         "ironlayer_ai_calls_total",
-        "Total AI advisory calls by call type",
-        ["call_type"],
+        "Total AI advisory calls by call type and outcome",
+        ["call_type", "outcome"],
     )
 
     ACTIVE_LOCKS = Gauge(
@@ -58,6 +58,21 @@ try:
         "Internal operation duration in seconds (profiled hot paths)",
         ["operation"],
         buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    )
+
+    # BL-138: rate-limit rejection counter.  Uses the normalised path to
+    # avoid unbounded label cardinality (same normalisation as the main
+    # HTTP metrics middleware).
+    RATE_LIMIT_REJECTED_TOTAL = Counter(
+        "ironlayer_rate_limit_rejected_total",
+        "Total requests rejected by the rate limiter",
+        ["endpoint"],
+    )
+
+    # BL-140: event bus outbox backlog gauge.
+    EVENT_BUS_OUTBOX_BACKLOG = Gauge(
+        "ironlayer_event_bus_outbox_pending",
+        "Number of outbox entries awaiting dispatch",
     )
 
     _METRICS_AVAILABLE = True

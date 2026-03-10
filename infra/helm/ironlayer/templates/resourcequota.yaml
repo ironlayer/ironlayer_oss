@@ -1,0 +1,27 @@
+{{/*
+============================================================================
+ResourceQuota (BL-150) — Namespace-level resource caps
+============================================================================
+Prevents runaway resource usage from exhausting cluster capacity.
+Disabled by default (resourceQuota.enabled=false) to avoid breaking
+existing installations.  Enable in production via:
+
+  helm upgrade ironlayer . \
+    --set resourceQuota.enabled=true \
+    --set resourceQuota.hard.requests\.cpu="4" \
+    --set resourceQuota.hard.limits\.cpu="16"
+
+The defaults below are suitable for a 3-service deployment with autoscaling
+up to ~10 API replicas, 5 AI Engine replicas, and 4 frontend replicas.
+*/}}
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "ironlayer.fullname" . }}-quota
+  labels:
+    {{- include "ironlayer.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.resourceQuota.hard | nindent 4 }}
+{{- end }}

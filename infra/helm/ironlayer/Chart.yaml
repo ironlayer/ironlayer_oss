@@ -20,9 +20,10 @@ maintainers:
   - name: IronLayer Team
 
 dependencies:
-  # Bitnami PostgreSQL subchart -- pinned to a known-good major version.
-  # Run `helm dependency update` after cloning to pull the subchart archive.
+  # Bitnami PostgreSQL subchart -- BL-152: pinned to a specific patch version
+  # to prevent unexpected upgrades.  Run `helm dependency update` after any
+  # version change to refresh Chart.lock.
   - name: postgresql
-    version: ">=15.0.0 <16.0.0"
+    version: "15.5.38"
     repository: https://charts.bitnami.com/bitnami
     condition: postgresql.enabled

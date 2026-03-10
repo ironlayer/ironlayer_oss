@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api import __version__
 from api.dependencies import AdminSessionDep, AIClientDep, get_db_session
 from api.middleware.rbac import Permission, Role, require_permission
+from api.services.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -117,14 +118,18 @@ async def readiness_probe(
 
     Checks:
     1. **Database connectivity** — executes ``SELECT 1``.
-    2. **AI engine connectivity** — graceful; returns ``degraded`` if
+    2. **Redis connectivity** — PING; critical when ``REDIS_URL`` is configured
+       because rate limiting and token revocation L2 cache require it.
+    3. **AI engine connectivity** — graceful; returns ``degraded`` if
        unavailable (the platform can still function without AI advisory).
 
     Returns HTTP 200 with ``"ready"`` or ``"degraded"`` status, or HTTP 503
-    with ``"not_ready"`` if the database is unreachable.
+    with ``"not_ready"`` if the database **or** a configured Redis instance
+    is unreachable.
     """
     checks: dict[str, str] = {
         "db": "ok",
+        "redis": "ok",
         "ai_engine": "ok",
     }
     overall = "ready"
@@ -136,6 +141,20 @@ async def readiness_probe(
         logger.error("Readiness: DB check failed: %s", exc)
         checks["db"] = "unavailable"
         overall = "not_ready"
+
+    # Redis (BL-136): critical when configured — rate limiting, token
+    # revocation, and plan cache all depend on it.
+    redis = await get_redis_client()
+    if redis is not None:
+        try:
+            await redis.ping()
+        except Exception as exc:
+            logger.error("Readiness: Redis check failed: %s", exc)
+            checks["redis"] = "unavailable"
+            overall = "not_ready"
+    else:
+        # Redis not configured — in-process fallbacks active.
+        checks["redis"] = "not_configured"
 
     # AI engine (non-critical — degraded is acceptable, short timeout).
     if not await _check_ai_health(ai_client):

@@ -291,3 +291,18 @@ variable "log_retention_days" {
     error_message = "Log retention must be between 30 and 730 days."
   }
 }
+
+# -----------------------------------------------------------------------------
+# Security
+# -----------------------------------------------------------------------------
+
+variable "additional_kv_ip_rules" {
+  description = "Additional IP CIDR ranges allowed to access Key Vault (e.g. office IPs, CI runner IPs). Format: [\"203.0.113.0/24\"]"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for ip in var.additional_kv_ip_rules : can(cidrhost(ip, 0))])
+    error_message = "Each entry in additional_kv_ip_rules must be a valid CIDR block."
+  }
+}

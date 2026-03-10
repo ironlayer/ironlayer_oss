@@ -76,10 +76,28 @@ api:
     timeoutSeconds: 3
     failureThreshold: 3
 
+  # -- Startup probe — gates liveness/readiness until the app has fully initialised.
+  # BL-147: failureThreshold × periodSeconds = 30 × 10s = 5-minute startup window.
+  startupProbe:
+    httpGet:
+      path: /api/v1/health
+      port: http
+    failureThreshold: 30
+    periodSeconds: 10
+
   # -- Pod scheduling constraints
   nodeSelector: {}
   tolerations: []
-  affinity: {}
+  # BL-146: Prefer spreading replicas across nodes (soft anti-affinity).
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ironlayer-api
+            topologyKey: kubernetes.io/hostname
   podAnnotations: {}
   podLabels: {}
 
@@ -148,10 +166,27 @@ aiEngine:
     timeoutSeconds: 3
     failureThreshold: 3
 
+  # BL-147: Startup probe — use /readiness (waits for model warm-up).
+  startupProbe:
+    httpGet:
+      path: /readiness
+      port: http
+    failureThreshold: 30
+    periodSeconds: 10
+
   # -- Pod scheduling constraints
   nodeSelector: {}
   tolerations: []
-  affinity: {}
+  # BL-146: Soft anti-affinity to spread AI engine replicas across nodes.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ironlayer-ai-engine
+            topologyKey: kubernetes.io/hostname
   podAnnotations: {}
   podLabels: {}
 
@@ -199,10 +234,27 @@ frontend:
     timeoutSeconds: 3
     failureThreshold: 3
 
+  # BL-147: Startup probe for frontend (nginx can be slow on first start).
+  startupProbe:
+    httpGet:
+      path: /
+      port: http
+    failureThreshold: 30
+    periodSeconds: 10
+
   # -- Pod scheduling constraints
   nodeSelector: {}
   tolerations: []
-  affinity: {}
+  # BL-146: Soft anti-affinity to spread frontend replicas across nodes.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ironlayer-frontend
+            topologyKey: kubernetes.io/hostname
   podAnnotations: {}
   podLabels: {}
 
@@ -306,6 +358,10 @@ autoscaling:
 # Linkerd service meshes.  Enable this section and set your provider to inject
 # sidecar proxies with automatic mTLS between API ↔ AI Engine ↔ PostgreSQL.
 mtls:
+  # BL-151: PRODUCTION DEPLOYMENTS MUST SET enabled: true.
+  # Without mTLS, all inter-service traffic (API ↔ AI Engine ↔ PostgreSQL)
+  # is unencrypted inside the cluster — a serious security risk in shared
+  # environments.  Set enabled: true and configure your service mesh below.
   enabled: false
 
   # Service mesh provider: "istio" or "linkerd"
@@ -342,6 +398,35 @@ pdb:
 networkPolicy:
   enabled: true
   ingressNamespace: ingress-nginx  # Override for Traefik, Contour, etc.
+  # BL-149: Namespace where Prometheus is running (for metrics scrape ingress rules).
+  monitoringNamespace: monitoring
+
+# ---------------------------------------------------------------------------
+# ResourceQuota (BL-150) — namespace-level resource caps.
+# Disabled by default; enable in production to prevent runaway resource usage.
+# ---------------------------------------------------------------------------
+resourceQuota:
+  enabled: false
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "50"
+
+# ---------------------------------------------------------------------------
+# Service Account -- shared across workloads unless overridden per-service.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Secret Rotation CronJob (BL-155) — monthly JWT secret rotation.
+# Disabled by default.  See templates/secret-rotation-job.yaml for details.
+# ---------------------------------------------------------------------------
+secretRotation:
+  enabled: false
+  # Azure Key Vault name that holds JWT-SECRET and JWT-SECRET-PREVIOUS.
+  keyVaultName: ""
+  # Kubernetes Deployment name (or Azure Container App name) for the API.
+  apiAppName: ""
 
 # ---------------------------------------------------------------------------
 # Service Account -- shared across workloads unless overridden per-service.

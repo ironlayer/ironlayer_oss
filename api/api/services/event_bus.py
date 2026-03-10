@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from api.middleware.prometheus import EVENT_BUS_OUTBOX_BACKLOG
+
+    _EB_METRICS = True
+except ImportError:
+    _EB_METRICS = False
+
 
 # ---------------------------------------------------------------------------
 # Event types
@@ -550,6 +557,8 @@ class OutboxPoller:
         async with self._session_factory() as session:
             repo = EventOutboxRepository(session)
             pending_count = await repo.count_pending()
+            if _EB_METRICS:
+                EVENT_BUS_OUTBOX_BACKLOG.set(pending_count)
             if pending_count == 0:
                 return
             limit = min(500, max(100, pending_count * 2))

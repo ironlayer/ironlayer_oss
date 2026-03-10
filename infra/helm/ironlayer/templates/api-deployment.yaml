@@ -106,6 +106,10 @@ spec:
             # The AI engine is reached over the in-cluster service.
             - name: API_AI_ENGINE_URL
               value: "http://{{ include "ironlayer.ai.fullname" . }}:{{ .Values.aiEngine.port }}"
+          {{- if .Values.api.startupProbe }}
+          startupProbe:
+            {{- toYaml .Values.api.startupProbe | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.api.livenessProbe | nindent 12 }}
           readinessProbe:

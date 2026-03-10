@@ -1,5 +1,34 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 
+// BL-156: Report frontend errors to the backend for structured log ingestion.
+// Uses the configured error reporting URL (or the default /api/v1/errors/frontend).
+// Fail-silent: any network or serialisation error is swallowed.
+function _reportError(error: Error, errorInfo: ErrorInfo): void {
+  const url =
+    (typeof import.meta !== 'undefined' &&
+      (import.meta as Record<string, unknown>).env != null &&
+      (import.meta as { env: Record<string, string> }).env.VITE_ERROR_REPORTING_URL) ||
+    '/api/v1/errors/frontend';
+
+  const payload = {
+    error_message: error.message,
+    component_stack: errorInfo.componentStack ?? '',
+    route: typeof window !== 'undefined' ? window.location.pathname : '',
+    timestamp: new Date().toISOString(),
+  };
+
+  // Fire-and-forget; we deliberately ignore the promise.
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    // Keep-alive ensures the request completes even if the page is unloading.
+    keepalive: true,
+  }).catch(() => {
+    // Intentionally swallowed — error reporting must never throw.
+  });
+}
+
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
@@ -22,6 +51,8 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
+    // BL-156: Report to backend structured log for ingestion by Log Analytics.
+    _reportError(error, errorInfo);
   }
 
   render(): ReactNode {

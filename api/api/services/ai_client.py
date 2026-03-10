@@ -12,6 +12,13 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+try:
+    from api.middleware.prometheus import AI_CALLS_TOTAL
+
+    _AI_METRICS = True
+except ImportError:
+    _AI_METRICS = False
+
 # ---------------------------------------------------------------------------
 # Prompt injection sanitization
 # ---------------------------------------------------------------------------
@@ -400,12 +407,16 @@ class AIServiceClient:
             response.raise_for_status()
             # Server responded — circuit is healthy regardless of status code.
             self._circuit_breaker.on_success()
+            if _AI_METRICS:
+                AI_CALLS_TOTAL.labels(call_type="advisory", outcome="success").inc()
             return cast(dict[str, Any], response.json())
         except httpx.HTTPStatusError as exc:
             # HTTP errors (4xx/5xx) mean the server is responding — do NOT trip
             # the circuit.  The server is reachable; the request was just invalid
             # or the engine returned an error response.
             self._circuit_breaker.on_success()
+            if _AI_METRICS:
+                AI_CALLS_TOTAL.labels(call_type="advisory", outcome="http_error").inc()
             logger.warning(
                 "AI engine returned %d for %s: %s",
                 exc.response.status_code,
@@ -417,6 +428,8 @@ class AIServiceClient:
             # Network-level failures (timeout, connection refused, DNS) trip the
             # circuit because they cause the full 10 s timeout to block.
             self._circuit_breaker.on_failure()
+            if _AI_METRICS:
+                AI_CALLS_TOTAL.labels(call_type="advisory", outcome="network_error").inc()
             logger.warning(
                 "AI engine request to %s failed: %s",
                 path,

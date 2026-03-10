@@ -25,3 +25,23 @@ scrape_configs:
         labels:
           service: "ai-engine"
           environment: "dev"
+
+  # BL-135: PostgreSQL exporter — exposes pg_up, connection stats, disk metrics.
+  # Required for DatabaseDown and DatabaseDiskFull alerting rules to fire.
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+        labels:
+          service: "postgres"
+          environment: "dev"
+
+  # BL-134: Prometheus Pushgateway — receives check engine metrics pushed after
+  # each validation run. Required for CheckEngineStalled and
+  # CheckEngineHighErrorRate alerting rules to have data.
+  - job_name: "ironlayer-check-engine"
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+        labels:
+          service: "check-engine"
+          environment: "dev"

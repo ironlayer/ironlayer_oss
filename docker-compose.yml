@@ -84,6 +84,25 @@ services:
     depends_on:
       - api
 
+  # BL-134: Prometheus Pushgateway — receives check engine metrics pushed after
+  # each validation run. Exposes them for Prometheus to scrape.
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    ports:
+      - "9091:9091"
+
+  # BL-135: PostgreSQL exporter — exposes pg_up, connection pool, disk metrics.
+  # Required for DatabaseDown and DatabaseDiskFull alerting rules to fire.
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://ironlayer:ironlayer_dev@postgres:5432/ironlayer?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v2.51.0
     ports:
@@ -97,6 +116,8 @@ services:
       - "--storage.tsdb.retention.time=30d"
     depends_on:
       - api
+      - pushgateway
+      - postgres_exporter
 
   grafana:
     image: grafana/grafana:10.4.0

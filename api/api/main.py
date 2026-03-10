@@ -41,6 +41,7 @@ from api.routers import (
     customer_health,
     environments,
     event_subscriptions,
+    frontend_errors,
     health,
     models,
     plans,
@@ -356,6 +357,7 @@ def create_app() -> FastAPI:
     app.include_router(reports.router, prefix="/api/v1")
     app.include_router(customer_health.router, prefix="/api/v1")
     app.include_router(team.router, prefix="/api/v1")
+    app.include_router(frontend_errors.router)  # BL-156: no prefix; router declares /api/v1/errors
 
     # Metrics endpoint — outside /api/v1 versioning (Prometheus scrape).
     app.include_router(metrics_router.router)

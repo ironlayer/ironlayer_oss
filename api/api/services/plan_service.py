@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any, cast
@@ -41,7 +43,56 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import APISettings
 from api.services.ai_client import AIServiceClient
 
+try:
+    from api.middleware.prometheus import PLAN_RUNS_TOTAL
+
+    _PLAN_METRICS = True
+except ImportError:
+    _PLAN_METRICS = False
+
 logger = logging.getLogger(__name__)
+
+
+def _push_check_engine_metrics_sync(
+    pushgateway_url: str, duration_seconds: float, outcome: str,
+) -> None:
+    """Synchronous Pushgateway push — runs in a thread via run_in_executor."""
+    try:
+        from prometheus_client import CollectorRegistry, Counter, Histogram, push_to_gateway
+
+        registry = CollectorRegistry()
+        Counter(
+            "check_engine_runs_total",
+            "Total check engine validation runs by outcome",
+            ["outcome"],
+            registry=registry,
+        ).labels(outcome=outcome).inc()
+        Histogram(
+            "check_engine_duration_seconds",
+            "Check engine validation run duration in seconds",
+            registry=registry,
+        ).observe(duration_seconds)
+        push_to_gateway(pushgateway_url, job="ironlayer-check-engine", registry=registry)
+    except Exception:
+        logger.debug("Failed to push check engine metrics to Pushgateway", exc_info=True)
+
+
+async def _push_check_engine_metrics(duration_seconds: float, outcome: str) -> None:
+    """Push check engine run metrics to Prometheus Pushgateway (BL-139).
+
+    Fail-open: if ``PUSHGATEWAY_URL`` is unset or the push fails, the error is
+    logged at DEBUG level and execution continues normally.  The blocking
+    ``push_to_gateway`` call is offloaded to a thread to avoid stalling the
+    event loop.
+    """
+    pushgateway_url = os.environ.get("PUSHGATEWAY_URL", "")
+    if not pushgateway_url:
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None, _push_check_engine_metrics_sync, pushgateway_url, duration_seconds, outcome,
+    )
+
 
 # BL-094: Redis cache TTL for plan JSON (5 minutes).
 PLAN_CACHE_TTL = 300
@@ -130,106 +181,112 @@ class PlanService:
         9. Persist the plan.
         10. Return the plan as a dictionary.
         """
-        from api.validation import resolve_repo_path_under_base
+        try:
+            from api.validation import resolve_repo_path_under_base
 
-        allowed_base = Path(self._settings.allowed_repo_base).resolve()
-        repo = resolve_repo_path_under_base(repo_path, allowed_base)
+            allowed_base = Path(self._settings.allowed_repo_base).resolve()
+            repo = resolve_repo_path_under_base(repo_path, allowed_base)
 
-        if not (repo / ".git").is_dir():
-            raise ValueError(f"Not a valid git repository: {repo_path}")
+            if not (repo / ".git").is_dir():
+                raise ValueError(f"Not a valid git repository: {repo_path}")
 
-        # Load models at the target commit ---------------------------------
-        models_dir = self._resolve_models_dir(repo)
-        model_list = load_models_from_directory(models_dir)
-        models_by_name: dict[str, ModelDefinition] = {m.name: m for m in model_list}
+            # Load models at the target commit ---------------------------------
+            models_dir = self._resolve_models_dir(repo)
+            model_list = load_models_from_directory(models_dir)
+            models_by_name: dict[str, ModelDefinition] = {m.name: m for m in model_list}
 
-        # Meter model loading.
-        if self._metering is not None:
-            self._metering.record_event(
-                tenant_id=self._tenant_id,
-                event_type=UsageEventType.MODEL_LOADED,
-                quantity=len(model_list),
-                metadata={
-                    "repo_path": repo_path,
-                    "model_names": [m.name for m in model_list],
-                },
-            )
-
-        # SQL safety check -- catch dangerous operations early -------------
-        self._validate_models_sql_safety(model_list)
-
-        # Build DAG ---------------------------------------------------------
-        dag = build_dag(model_list)
-
-        # Identify changed SQL files between base and target ----------------
-        changed_files = await self._git_changed_files(repo, base_sha, target_sha)
-
-        # Build content-hash snapshots at base and target -------------------
-        base_versions = await self._build_version_map(repo, base_sha, changed_files)
-        target_versions: dict[str, str] = {m.name: m.content_hash for m in model_list}
-
-        # Structural diff ---------------------------------------------------
-        diff_result: DiffResult = compute_structural_diff(base_versions, target_versions)
-
-        # Watermarks and historical stats — fetched in batch to avoid N+1 ----
-        model_name_list = list(models_by_name.keys())
-        watermarks: dict[str, tuple[Any, Any]] = await self._watermark_repo.get_watermarks_batch(
-            model_name_list
-        )
-        batch_stats = await self._run_repo.get_historical_stats_batch(model_name_list)
-        run_stats: dict[str, dict[str, Any]] = {
-            name: stats for name, stats in batch_stats.items() if stats["run_count"] > 0
-        }
-
-        # Run schema contract validation for models with active contracts ---
-        models_with_contracts = [m for m in model_list if m.contract_mode != SchemaContractMode.DISABLED]
-        contract_results: ContractValidationResult | None = None
-        if models_with_contracts:
-            contract_results = validate_schema_contracts_batch(models_with_contracts)
-            if contract_results.violations:
-                logger.info(
-                    "Schema contract validation: %d violation(s) across %d model(s) (%d breaking)",
-                    len(contract_results.violations),
-                    contract_results.models_checked,
-                    contract_results.breaking_count,
+            # Meter model loading.
+            if self._metering is not None:
+                self._metering.record_event(
+                    tenant_id=self._tenant_id,
+                    event_type=UsageEventType.MODEL_LOADED,
+                    quantity=len(model_list),
+                    metadata={
+                        "repo_path": repo_path,
+                        "model_names": [m.name for m in model_list],
+                    },
                 )
 
-        # Generate plan ------------------------------------------------------
-        plan: Plan = generate_plan(
-            models=models_by_name,
-            diff_result=diff_result,
-            dag=dag,
-            watermarks=watermarks,
-            run_stats=run_stats,
-            base=base_sha,
-            target=target_sha,
-            as_of_date=date.today(),
-            contract_results=contract_results,
-        )
+            # SQL safety check -- catch dangerous operations early -------------
+            self._validate_models_sql_safety(model_list)
 
-        # Persist ------------------------------------------------------------
-        plan_json_str = plan.model_dump_json(indent=2)
-        saved_row = await self._plan_repo.save_plan(
-            plan_id=plan.plan_id,
-            base_sha=base_sha,
-            target_sha=target_sha,
-            plan_json=plan_json_str,
-        )
+            # Build DAG ---------------------------------------------------------
+            dag = build_dag(model_list)
 
-        # BL-094: Pre-warm the read cache so the first GET is a cache hit.
-        # The cached shape must match what get_plan() builds from a DB row
-        # (including created_at) so callers see a consistent dict regardless
-        # of whether the response came from cache or DB.
-        # save_plan() returns the flushed PlanTable row, so created_at is
-        # already populated by the DB default — no re-fetch needed.
-        plan_dict = plan.model_dump()
-        plan_dict.setdefault("approvals", [])
-        plan_dict.setdefault("auto_approved", False)
-        plan_dict["created_at"] = (
-            saved_row.created_at.isoformat() if saved_row.created_at else None
-        )
-        await self._cache_set(plan.plan_id, plan_dict)
+            # Identify changed SQL files between base and target ----------------
+            changed_files = await self._git_changed_files(repo, base_sha, target_sha)
 
+            # Build content-hash snapshots at base and target -------------------
+            base_versions = await self._build_version_map(repo, base_sha, changed_files)
+            target_versions: dict[str, str] = {m.name: m.content_hash for m in model_list}
+
+            # Structural diff ---------------------------------------------------
+            diff_result: DiffResult = compute_structural_diff(base_versions, target_versions)
+
+            # Watermarks and historical stats — fetched in batch to avoid N+1 ----
+            model_name_list = list(models_by_name.keys())
+            watermarks: dict[str, tuple[Any, Any]] = await self._watermark_repo.get_watermarks_batch(
+                model_name_list
+            )
+            batch_stats = await self._run_repo.get_historical_stats_batch(model_name_list)
+            run_stats: dict[str, dict[str, Any]] = {
+                name: stats for name, stats in batch_stats.items() if stats["run_count"] > 0
+            }
+
+            # Run schema contract validation for models with active contracts ---
+            models_with_contracts = [m for m in model_list if m.contract_mode != SchemaContractMode.DISABLED]
+            contract_results: ContractValidationResult | None = None
+            if models_with_contracts:
+                _check_start = time.monotonic()
+                contract_results = validate_schema_contracts_batch(models_with_contracts)
+                _check_duration = time.monotonic() - _check_start
+                if contract_results.violations:
+                    logger.info(
+                        "Schema contract validation: %d violation(s) across %d model(s) (%d breaking)",
+                        len(contract_results.violations),
+                        contract_results.models_checked,
+                        contract_results.breaking_count,
+                    )
+                # BL-139: push only when the engine actually ran.
+                await _push_check_engine_metrics(_check_duration, outcome="success")
+
+            # Generate plan ------------------------------------------------------
+            plan: Plan = generate_plan(
+                models=models_by_name,
+                diff_result=diff_result,
+                dag=dag,
+                watermarks=watermarks,
+                run_stats=run_stats,
+                base=base_sha,
+                target=target_sha,
+                as_of_date=date.today(),
+                contract_results=contract_results,
+            )
+
+            # Persist ------------------------------------------------------------
+            plan_json_str = plan.model_dump_json(indent=2)
+            saved_row = await self._plan_repo.save_plan(
+                plan_id=plan.plan_id,
+                base_sha=base_sha,
+                target_sha=target_sha,
+                plan_json=plan_json_str,
+            )
+
+            # BL-094: Pre-warm the read cache so the first GET is a cache hit.
+            plan_dict = plan.model_dump()
+            plan_dict.setdefault("approvals", [])
+            plan_dict.setdefault("auto_approved", False)
+            plan_dict["created_at"] = (
+                saved_row.created_at.isoformat() if saved_row.created_at else None
+            )
+            await self._cache_set(plan.plan_id, plan_dict)
+        except Exception:
+            if _PLAN_METRICS:
+                PLAN_RUNS_TOTAL.labels(outcome="failure").inc()
+            raise
+        else:
+            if _PLAN_METRICS:
+                PLAN_RUNS_TOTAL.labels(outcome="success").inc()
         return plan_dict
 
     # ------------------------------------------------------------------

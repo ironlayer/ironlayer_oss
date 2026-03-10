@@ -117,7 +117,12 @@ rollback() {
 trap rollback ERR
 
 # ---------------------------------------------------------------------------
-# 3. Deploy the new revision.
+# 3. BL-144: Capture baseline metrics before deploying the new revision.
+# ---------------------------------------------------------------------------
+capture_baseline_metrics
+
+# ---------------------------------------------------------------------------
+# 4. Deploy the new revision.
 # ---------------------------------------------------------------------------
 echo "▸ Deploying new revision (suffix: ${SUFFIX})..."
 az containerapp update \
@@ -220,23 +225,28 @@ fi
 # Override via CANARY_ERROR_RATE_THRESHOLD env var (e.g. export CANARY_ERROR_RATE_THRESHOLD=0.02).
 ERROR_RATE_THRESHOLD="${CANARY_ERROR_RATE_THRESHOLD:-0.015}"
 
-check_error_rate() {
-  # Skip check if no Prometheus endpoint is configured.
-  [ -z "${PROMETHEUS_URL:-}" ] && return 0
+# BL-143: p95 latency threshold in milliseconds (converted to seconds for Prometheus).
+LATENCY_THRESHOLD_MS="${CANARY_LATENCY_THRESHOLD_MS:-500}"
 
-  local query
-  query="sum(rate(http_requests_total{job=\"${APP}\",code=~\"5..\"}[2m]))/sum(rate(http_requests_total{job=\"${APP}\"}[2m]))"
+# BL-141: When CANARY_PROMETHEUS_REQUIRED=true (default), a Prometheus outage
+# aborts the deploy rather than silently allowing a potentially broken release
+# to proceed.  Set to "false" in local/CI environments without Prometheus.
+CANARY_PROMETHEUS_REQUIRED="${CANARY_PROMETHEUS_REQUIRED:-true}"
 
+# BL-144: Baseline metrics (captured before deploying the new revision).
+BASELINE_ERROR_RATE="0"
+BASELINE_P95_LATENCY="0"
+
+_prometheus_query() {
+  # Run a Prometheus instant query; print the first result value or "0" on no data.
+  # Returns 1 (fail) on curl error so callers can decide fail-open vs fail-closed.
+  local query="$1"
   local result
   result=$(curl -sf --max-time 10 \
     "${PROMETHEUS_URL}/api/v1/query" \
-    --data-urlencode "query=${query}" 2>/dev/null) || {
-    echo "  ⚠ Prometheus query failed — continuing (fail-open)"
-    return 0
-  }
+    --data-urlencode "query=${query}" 2>/dev/null) || return 1
 
-  local error_rate
-  error_rate=$(echo "$result" | python3 -c "
+  echo "$result" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 results = data.get('data', {}).get('result', [])
@@ -244,23 +254,135 @@ if not results:
     print('0')
 else:
     val = results[0].get('value', [0, '0'])[1]
-    print(val if val != 'NaN' else '0')
-" 2>/dev/null) || error_rate="0"
+    print(val if val not in ('NaN', 'Inf', '-Inf') else '0')
+" 2>/dev/null || echo "0"
+}
 
-  echo "  ▸ Error rate: ${error_rate} (threshold: ${ERROR_RATE_THRESHOLD})"
+capture_baseline_metrics() {
+  # BL-144: Snapshot error rate and p95 latency from the current production revision.
+  [ -z "${PROMETHEUS_URL:-}" ] && return 0
+  echo "▸ Capturing baseline metrics from current production traffic..."
+  BASELINE_ERROR_RATE=$(_prometheus_query \
+    "sum(rate(ironlayer_http_requests_total{job=\"${APP}\",status_code=~\"5..\"}[5m]))/sum(rate(ironlayer_http_requests_total{job=\"${APP}\"}[5m]))" \
+    2>/dev/null) || BASELINE_ERROR_RATE="0"
+  BASELINE_P95_LATENCY=$(_prometheus_query \
+    "histogram_quantile(0.95, rate(ironlayer_http_request_duration_seconds_bucket{job=\"${APP}\"}[5m]))" \
+    2>/dev/null) || BASELINE_P95_LATENCY="0"
+  echo "  Baseline error rate: ${BASELINE_ERROR_RATE}"
+  echo "  Baseline p95 latency: ${BASELINE_P95_LATENCY}s"
+}
 
-  # Compare as floats via python (shell lacks float arithmetic).
+check_error_rate() {
+  # BL-141: Fail-closed when Prometheus is unreachable and CANARY_PROMETHEUS_REQUIRED=true.
+  [ -z "${PROMETHEUS_URL:-}" ] && return 0
+
+  local query
+  query="sum(rate(ironlayer_http_requests_total{job=\"${APP}\",status_code=~\"5..\"}[2m]))/sum(rate(ironlayer_http_requests_total{job=\"${APP}\"}[2m]))"
+
+  local error_rate
+  error_rate=$(_prometheus_query "$query") || {
+    if [ "${CANARY_PROMETHEUS_REQUIRED}" = "true" ]; then
+      echo "!!! Prometheus unreachable — cannot validate error rate. Aborting canary."
+      return 1
+    else
+      echo "  ⚠ Prometheus query failed — continuing (fail-open; CANARY_PROMETHEUS_REQUIRED=false)"
+      return 0
+    fi
+  }
+
+  echo "  ▸ Error rate: ${error_rate} (threshold: ${ERROR_RATE_THRESHOLD}, baseline: ${BASELINE_ERROR_RATE})"
+
+  # BL-144: Gate fires if rate exceeds BOTH the static threshold AND 2× baseline.
   python3 -c "
 import sys
-rate, threshold = float('${error_rate}'), float('${ERROR_RATE_THRESHOLD}')
-if rate > threshold:
-    print(f'  ✗ Error rate {rate:.4f} exceeds threshold {threshold:.4f}')
+rate       = float('${error_rate}')
+threshold  = float('${ERROR_RATE_THRESHOLD}')
+baseline   = float('${BASELINE_ERROR_RATE}')
+effective  = max(threshold, baseline * 2)
+if rate > effective:
+    print(f'  ✗ Error rate {rate:.4f} exceeds effective threshold {effective:.4f}')
     sys.exit(1)
 " || {
     echo "  ✗ Error rate too high — triggering rollback"
     false  # triggers rollback trap
   }
 }
+
+check_latency() {
+  # BL-143: Abort if p95 latency exceeds CANARY_LATENCY_THRESHOLD_MS.
+  [ -z "${PROMETHEUS_URL:-}" ] && return 0
+
+  local query
+  query="histogram_quantile(0.95, rate(ironlayer_http_request_duration_seconds_bucket{job=\"${APP}\"}[2m]))"
+
+  local latency_s
+  latency_s=$(_prometheus_query "$query") || {
+    if [ "${CANARY_PROMETHEUS_REQUIRED}" = "true" ]; then
+      echo "!!! Prometheus unreachable — cannot validate latency. Aborting canary."
+      return 1
+    else
+      echo "  ⚠ Latency query failed — continuing (fail-open)"
+      return 0
+    fi
+  }
+
+  local threshold_s
+  threshold_s=$(python3 -c "print(${LATENCY_THRESHOLD_MS} / 1000)")
+
+  echo "  ▸ p95 latency: ${latency_s}s (threshold: ${threshold_s}s, baseline: ${BASELINE_P95_LATENCY}s)"
+
+  python3 -c "
+import sys
+latency   = float('${latency_s}')
+threshold = float('${threshold_s}')
+baseline  = float('${BASELINE_P95_LATENCY}')
+effective = max(threshold, baseline * 2)
+if latency > effective:
+    print(f'  ✗ p95 latency {latency:.3f}s exceeds effective threshold {effective:.3f}s')
+    sys.exit(1)
+" || {
+    echo "  ✗ Latency too high — triggering rollback"
+    false  # triggers rollback trap
+  }
+}
+
+check_ai_readiness() {
+  # BL-142: Poll the AI engine /readiness endpoint before shifting traffic.
+  # Only runs when APP contains "ai" in its name.
+  [[ "${APP}" != *ai* ]] && return 0
+
+  local ai_fqdn
+  ai_fqdn=$(az containerapp revision show \
+    --name "$APP" \
+    --resource-group "$RG" \
+    --revision "$NEW_REVISION" \
+    --query "properties.fqdn" \
+    --output tsv 2>/dev/null || echo "")
+
+  if [ -z "$ai_fqdn" ]; then
+    echo "  ⚠ Could not resolve AI engine FQDN — skipping readiness check"
+    return 0
+  fi
+
+  echo "▸ Polling AI engine readiness at https://${ai_fqdn}/readiness (max 100s)..."
+  for i in $(seq 1 10); do
+    HTTP_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' \
+      --max-time 5 \
+      "https://${ai_fqdn}/readiness" 2>/dev/null || echo "000")
+    if [ "$HTTP_STATUS" = "200" ]; then
+      echo "  ✓ AI engine ready (attempt ${i}/10, HTTP 200)"
+      return 0
+    fi
+    echo "  Attempt ${i}/10: HTTP ${HTTP_STATUS}, waiting 10s..."
+    sleep 10
+  done
+
+  echo "  ✗ AI engine readiness check failed after 100s — triggering rollback"
+  false  # triggers rollback trap
+}
+
+# BL-142: Verify AI engine model is warmed before any traffic reaches it.
+check_ai_readiness
 
 for WEIGHT in 10 50 100; do
   OLD_WEIGHT=$((100 - WEIGHT))
@@ -281,10 +403,11 @@ for WEIGHT in 10 50 100; do
 
   echo "▸ Traffic: ${WEIGHT}% on ${NEW_REVISION}$( [ "$OLD_WEIGHT" -gt 0 ] && echo ", ${OLD_WEIGHT}% on ${OLD_REVISION}" )"
 
-  # Pause between shifts, then validate error rate (skip at 100%).
+  # Pause between shifts, then validate error rate and latency (skip at 100%).
   if [ "$WEIGHT" -lt 100 ]; then
     sleep 60
     check_error_rate
+    check_latency  # BL-143
   fi
 done
 
