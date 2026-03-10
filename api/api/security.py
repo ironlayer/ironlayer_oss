@@ -846,6 +846,8 @@ class TokenManager:
                     token,
                     secret,
                     algorithms=[self._config.jwt_algorithm],
+                    issuer="ironlayer",
+                    options={"verify_iss": True},
                 )
                 if i > 0:
                     logger.info("Token validated using previous JWT secret (rotation in progress)")

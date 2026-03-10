@@ -182,12 +182,14 @@ class AIRateLimitMiddleware(BaseHTTPMiddleware):
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests whose ``Content-Length`` exceeds a configurable limit.
+    """Reject requests whose body exceeds a configurable limit.
 
-    This is a fast, pre-read guard: it inspects the ``Content-Length``
-    header before any body is consumed.  Requests that omit the header
-    (chunked transfer-encoding) are allowed through; downstream
-    Pydantic validators enforce field-level limits.
+    Two-layer guard:
+    1. **Pre-read** — checks ``Content-Length`` header before any body
+       is consumed (fast reject for well-behaved clients).
+    2. **Streaming** — wraps the ASGI receive channel to count bytes as
+       they arrive, rejecting chunked-encoded requests that exceed the
+       limit without relying on ``Content-Length``.
 
     Default limit: 1 MiB (1 048 576 bytes).
     """
@@ -197,6 +199,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         self._max_size = max_body_size
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Layer 1: fast Content-Length check.
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
@@ -214,7 +217,41 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                     self._max_size,
                 )
                 return JSONResponse(
-                    {"detail": (f"Request body too large. Maximum: {self._max_size} bytes")},
+                    {"detail": f"Request body too large. Maximum: {self._max_size} bytes"},
                     status_code=413,
                 )
-        return await call_next(request)
+
+        # Layer 2: streaming byte counter for chunked requests.
+        bytes_received = 0
+        max_size = self._max_size
+        original_receive = request.receive
+        exceeded = False
+
+        async def _counting_receive():
+            nonlocal bytes_received, exceeded
+            message = await original_receive()
+            if message.get("type") == "http.request":
+                body = message.get("body", b"")
+                bytes_received += len(body)
+                if bytes_received > max_size:
+                    exceeded = True
+                    logger.warning(
+                        "Rejected chunked request to %s: streamed %d bytes exceeds limit %d",
+                        request.url.path,
+                        bytes_received,
+                        max_size,
+                    )
+                    # Return empty body + more_body=False to stop streaming.
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        request._receive = _counting_receive
+        response = await call_next(request)
+
+        if exceeded:
+            return JSONResponse(
+                {"detail": f"Request body too large. Maximum: {self._max_size} bytes"},
+                status_code=413,
+            )
+
+        return response

@@ -124,26 +124,65 @@ async def run_sse(host: str = "127.0.0.1", port: int = 3333) -> None:
     This transport exposes the server over HTTP for remote access.
     Useful for self-hosting or testing from browser-based tools.
 
+    **Security:** When bound to a non-loopback address, a bearer token
+    is required via the ``MCP_AUTH_TOKEN`` environment variable.  All
+    requests must include ``Authorization: Bearer <token>``.  Binding
+    to ``0.0.0.0`` without setting ``MCP_AUTH_TOKEN`` is rejected.
+
     Parameters
     ----------
     host:
         Bind address.  Default ``127.0.0.1`` (localhost only).
         Use ``0.0.0.0`` to listen on all interfaces (requires
-        explicit ``--host 0.0.0.0``).
+        explicit ``--host 0.0.0.0`` and ``MCP_AUTH_TOKEN``).
     port:
         HTTP port.  Default ``3333``.
     """
     _ensure_mcp_installed()
 
+    import os
+    import secrets
+
     import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
+
+    auth_token = os.environ.get("MCP_AUTH_TOKEN", "")
+    is_loopback = host in ("127.0.0.1", "::1", "localhost")
+
+    # Refuse to bind to all interfaces without an auth token.
+    if not is_loopback and not auth_token:
+        import sys
+
+        print(
+            "ERROR: Binding MCP SSE to a non-loopback address requires "
+            "MCP_AUTH_TOKEN to be set.\n"
+            "  export MCP_AUTH_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')\n"
+            "  ironlayer mcp serve --transport sse --host 0.0.0.0",
+            file=sys.stderr,
+        )
+        raise typer.Exit(code=1)
 
     server = create_server()
     sse_transport = SseServerTransport("/messages/")
 
+    async def _check_auth(request: Any) -> Any | None:
+        """Return a 401 JSONResponse if auth is required and missing/invalid."""
+        if not auth_token:
+            return None  # No auth required (loopback only)
+        header = request.headers.get("authorization", "")
+        if not header.startswith("Bearer "):
+            return JSONResponse({"detail": "Missing Authorization header"}, status_code=401)
+        if not secrets.compare_digest(header[7:], auth_token):
+            return JSONResponse({"detail": "Invalid auth token"}, status_code=401)
+        return None
+
     async def handle_sse(request: Any) -> Any:
+        auth_err = await _check_auth(request)
+        if auth_err is not None:
+            return auth_err
         async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(
                 streams[0],
@@ -151,13 +190,24 @@ async def run_sse(host: str = "127.0.0.1", port: int = 3333) -> None:
                 server.create_initialization_options(),
             )
 
+    async def handle_messages(request: Any) -> Any:
+        auth_err = await _check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        return await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+
     app = Starlette(
         debug=False,
         routes=[
             Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse_transport.handle_post_message),
+            Mount("/messages/", app=handle_messages),
         ],
     )
+
+    if not is_loopback:
+        logger.info("MCP SSE server binding to %s:%d (auth token required)", host, port)
+    else:
+        logger.info("MCP SSE server binding to %s:%d (loopback, no auth)", host, port)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     uv_server = uvicorn.Server(config)

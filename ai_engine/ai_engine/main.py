@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ai_engine import __version__
 from ai_engine.config import AISettings, load_ai_settings
@@ -265,6 +266,23 @@ def create_app() -> FastAPI:
         if pred is None or not pred.is_ready:
             raise HTTPException(status_code=503, detail="Models not yet initialized")
         return {"status": "ready"}
+
+    # -- Exception handlers --------------------------------------------------
+
+    @app.exception_handler(Exception)
+    async def catch_all_handler(request: Request, exc: Exception) -> JSONResponse:
+        """Return a safe generic error; log the full traceback server-side."""
+        logger.error(
+            "Unhandled %s on %s: %s",
+            type(exc).__name__,
+            request.url.path,
+            exc,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
 
     # Configures OTel tracing when OTEL_EXPORTER_OTLP_ENDPOINT is set.
     _configure_otel(app)

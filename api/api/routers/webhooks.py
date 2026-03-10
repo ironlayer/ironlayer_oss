@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -207,6 +208,46 @@ async def github_webhook(request: Request) -> dict[str, Any]:
                     "configuration to include a secret."
                 ),
             )
+
+        # ---------------------------------------------------------------
+        # M-6: Replay prevention — reject events with stale timestamps.
+        # After HMAC verification succeeds we know the payload is
+        # authentic.  Reject deliveries whose head commit timestamp is
+        # older than 5 minutes to prevent captured requests from being
+        # replayed later.
+        # ---------------------------------------------------------------
+        _REPLAY_WINDOW_SECONDS = 300  # 5 minutes
+        head_commit = event_data.get("head_commit")
+        if isinstance(head_commit, dict):
+            commit_ts_str = head_commit.get("timestamp", "")
+            if commit_ts_str:
+                try:
+                    commit_dt = datetime.fromisoformat(
+                        commit_ts_str.replace("Z", "+00:00"),
+                    )
+                    age_seconds = (
+                        datetime.now(timezone.utc) - commit_dt
+                    ).total_seconds()
+                    if age_seconds > _REPLAY_WINDOW_SECONDS:
+                        logger.warning(
+                            "Rejecting stale webhook: commit timestamp %s is %.0fs old "
+                            "(max %ds) for repo=%s branch=%s",
+                            commit_ts_str,
+                            age_seconds,
+                            _REPLAY_WINDOW_SECONDS,
+                            repo_url,
+                            branch,
+                        )
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Webhook delivery too old — possible replay attack",
+                        )
+                except HTTPException:
+                    raise
+                except (ValueError, TypeError, OverflowError):
+                    # Unparseable timestamp — proceed rather than blocking
+                    # on unexpected format changes from GitHub.
+                    pass
 
         # ---------------------------------------------------------------
         # Event processing (only reached after HMAC validation passes).

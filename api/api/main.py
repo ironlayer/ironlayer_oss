@@ -125,12 +125,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     settings: APISettings = load_api_settings()
 
-    # Fail fast: refuse to start in production/staging without JWT_SECRET.
+    # Fail fast: refuse to start in production/staging without a strong JWT_SECRET.
     jwt_secret_val = settings.jwt_secret.get_secret_value() if settings.jwt_secret else ""
-    if settings.platform_env in (PlatformEnv.STAGING, PlatformEnv.PROD) and not jwt_secret_val:
-        raise RuntimeError(
-            f"JWT_SECRET environment variable is required in {settings.platform_env.value} mode. Refusing to start."
-        )
+    if settings.platform_env in (PlatformEnv.STAGING, PlatformEnv.PROD):
+        if not jwt_secret_val:
+            raise RuntimeError(
+                f"JWT_SECRET environment variable is required in {settings.platform_env.value} mode. Refusing to start."
+            )
+        if len(jwt_secret_val) < 32:
+            raise RuntimeError(
+                f"JWT_SECRET must be at least 32 characters in {settings.platform_env.value} mode "
+                f"(got {len(jwt_secret_val)}). Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
 
     # Fail fast: refuse to start with the default credential encryption key in non-dev contexts.
     # This ensures credentials are protected by a secret independent of JWT_SECRET.
@@ -384,6 +390,15 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal database error"},
+        )
+
+    @app.exception_handler(Exception)
+    async def catch_all_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Log the full traceback server-side; return a safe generic message.
+        logger.error("Unhandled %s on %s: %s", type(exc).__name__, request.url.path, exc, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
         )
 
     return app
