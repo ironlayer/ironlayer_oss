@@ -35,7 +35,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://ironlayer.app"
-Repository = "https://github.com/ironlayer/ironlayer"
+Repository = "https://github.com/ironlayer/ironlayer_oss"
 Documentation = "https://docs.ironlayer.app"
 
 [dependency-groups]

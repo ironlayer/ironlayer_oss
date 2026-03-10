@@ -89,7 +89,7 @@ ironlayer status
 ```
 api/           package: ironlayer-api   v0.1.0   port 8000
 ai_engine/     package: ai-engine       v0.1.0   port 8001
-core_engine/   package: ironlayer-core  v0.3.0
+core_engine/   package: ironlayer-core  v0.2.0
 cli/           package: ironlayer       v0.2.0
 check_engine/  Rust + PyO3
 frontend/      React + Vite             port 3000

@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ironlayer/ironlayer/.github/actions/ironlayer-plan@main
+      - uses: ironlayer/ironlayer_oss/.github/actions/ironlayer-plan@main
         with:
           repo-path: "."
           # Optional: connect to IronLayer Cloud for AI-powered analysis
@@ -154,14 +154,12 @@ ironlayer/
 - [Architecture](docs/architecture.md) -- Dual-engine design, determinism invariant, multi-tenant model
 - [CLI Reference](docs/cli-reference.md) -- Every command with flags, env vars, exit codes
 - [API Reference](docs/api-reference.md) -- REST API authentication and endpoints
-- [Deployment Guide](docs/deployment.md) -- Docker Compose, Terraform (Azure Container Apps)
-- [Azure VM Setup](docs/azure-vm-setup.md) -- Deployment runner VM
 - [Release & Deployment Verification](docs/release-verification.md) -- How to verify PyPI, Cloudflare, and docs are live
 
 ## Tech Stack
 
 - **Python 3.11+** with uv package management
-- **SQLAlchemy 2.0** async with Alembic migrations (15 versioned)
+- **SQLAlchemy 2.0** async with Alembic migrations
 - **FastAPI** + Pydantic v2
 - **SQLGlot** (Databricks dialect) for SQL parsing and canonicalization
 - **NetworkX** for DAG operations
