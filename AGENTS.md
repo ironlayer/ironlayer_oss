@@ -1,86 +1,48 @@
-# AGENTS.md — Exodus / Iron Layer Platform
+# AGENTS.md — IronLayer
 
 This file provides AI coding agents (Cursor, GitHub Copilot, Claude Code, etc.) with workspace-level context.
-Individual repos have extended AGENTS.md files with repo-specific details.
-
----
-
-## Work Tracking
-
-**All work — including AI-agent work — must be tracked before starting.**
-
-1. Open `ironlayer_infra/BACKLOG.md` (private repo — canonical backlog).
-2. Find the item matching your task. If it doesn't exist, add it first.
-3. Change its status to `[IN-PROGRESS]` with today's date before writing any code.
-4. Only then begin implementation.
-
-See `ironlayer_infra/CLAUDE.md` for the full rule set (dependency verification,
-no-stubs rule, verification suite requirements, lessons learned update policy).
-
-OSS repo work (`ironlayer_OSS`) is tracked in the **same** private backlog —
-no changes to the public repo without a corresponding `[IN-PROGRESS]` item.
 
 ---
 
 ## Project Overview
 
-Exodus is an AI-native data platform company with three products:
+IronLayer is an AI-native SQL transformation control plane for Databricks.
 
-| Product | Repo | Role |
+| Component | Path | Role |
 |---|---|---|
-| **IronLayer** | `ironlayer_oss` (public) | SQL control plane — plan, lineage, cost modeling |
-| **Exodus Foundation** | `ironlayer_infra` | Turnkey Databricks platform — Terraform + dbt/SQLMesh + extractors |
-| **Exodus Autopilot** | `exodus-autopilot` | Agent fleet — GitHub App, AI PR review, self-healing |
-| **Shared Kernel** | `exodus-core` | auth, llm, security, memory, mcp, config |
-
-All repos live under `~/Documents/production_code/` as siblings (not submodules).
+| **API** | `api/` | FastAPI control plane (port 8000) |
+| **AI Engine** | `ai_engine/` | FastAPI advisory service (port 8001) |
+| **Core Engine** | `core_engine/` | Execution engine, ORM, state, DAG |
+| **CLI** | `cli/` | Typer CLI (`ironlayer`) |
+| **Check Engine** | `check_engine/` | Rust/PyO3 validation engine (90+ rules) |
+| **Frontend** | `frontend/` | React + Vite (port 3000) |
 
 ---
 
 ## Build and Test Commands
 
 ```bash
-# Activate environment (always use this)
-source activate.sh && source ~/.exodus/env.local
+# Run tests (from repo root, per package)
+uv run --package ironlayer-api pytest api/tests/ -v
+uv run --package ai-engine pytest ai_engine/tests/ -v
+uv run --package ironlayer-core pytest core_engine/tests/ -v
+uv run --package ironlayer pytest cli/tests/ -v
 
-# Run tests (any Python repo)
-uv run pytest tests/ -v
-
-# Lint Python
+# Lint and type-check
 uv run ruff check .
 uv run mypy . --ignore-missing-imports
 
-# Lint SQL (ironlayer_infra)
-sqlfluff lint dbt-framework/models/ --dialect databricks
+# Make targets (from repo root)
+make test-unit          # all unit tests
+make lint               # ruff + mypy
+make format             # ruff format + ruff --fix
+make migrate            # run Alembic migrations
 
-# Lint Terraform
-terraform fmt -check -recursive terraform/
-
-# Pre-commit (all repos)
-pre-commit run --all-files
-
-# IronLayer CLI
-ironlayer plan    # Validated execution plan
-ironlayer diff    # Schema/data diff
-ironlayer status  # System health
-
-# Autopilot CLI
-exodus review code <path>   # AI code review
-exodus agent run --next     # Run highest-priority backlog item
-exodus ai-usage             # Check AI spend
+# CLI commands
+ironlayer plan ./project HEAD~1 HEAD
+ironlayer diff ./project
+ironlayer status
 ```
-
----
-
-## Architecture Decisions
-
-1. **Shared kernel** — `exodus-core` for all shared concerns; product repos own product logic only
-2. **`for_each` over `count`** — Terraform resources use `for_each` with named maps
-3. **Medallion architecture** — Bronze → Silver → Gold
-4. **PEVR agent loop** — `plan()` → `execute()` → `verify()` → `replan()` (max 3 iterations)
-5. **Two-pass review** — local Ollama pass 1, conditional cloud pass 2
-6. **Budget-protected AI** — All calls through `exodus-core` LLM router
-7. **Everything Terraform** — All repos and org settings managed via `exodus-terraform`
 
 ---
 
@@ -88,47 +50,37 @@ exodus ai-usage             # Check AI spend
 
 ### Python
 - Type hints required, docstrings on public methods
-- Agents inherit from `exodus_core.agents.base.BaseAgent`
-- `rich` for CLI output, `click`/`typer` for CLI structure
-- `structlog` for structured logging
-- Never hardcode credentials — read from `os.environ` or `~/.exodus/env.local`
+- `rich` for CLI output, `typer` for CLI structure
+- Never hardcode credentials — read from `os.environ`
 - `uv run` for all commands
 
 ### Terraform
 - `for_each` with named maps — `count` only for boolean toggles
 - Tag all resources with `common_tags`
-- S3 backend + DynamoDB locking
 
-### SQL / dbt / SQLMesh
+### SQL
 - UPPERCASE keywords, CTE pattern
-- **dbt:** `{{ surrogate_key([...]) }}` — never MD5; every model needs YAML schema file
-- **SQLMesh:** `MODEL()` DDL block; grain + audits on incremental models; see `sqlmesh.mdc` rule
-- Clients choose dbt Core, dbt Cloud, or SQLMesh — IronLayer is framework-agnostic
+- Framework-agnostic — supports dbt Core, dbt Cloud, and SQLMesh
 
-### Git
+### Git Commit Convention
 ```
 type(scope): description
 Types: feat, fix, refactor, test, docs, ci, chore, perf
-Scopes: core, llm, plan, lineage, terraform, dbt, sqlmesh, agents, github-app, cicd, ai, standards
+Scopes: core, api, ai, cli, plan, lineage, check-engine, frontend, cicd
 ```
 
 ---
 
-## Credentials
+## Architecture Quick Reference
 
-Stored in `~/.exodus/env.local`. Template at `iron-layer-dev-workspace/tooling/env/env.template`.
-
-```bash
-ANTHROPIC_API_KEY, DATABRICKS_HOST, DATABRICKS_TOKEN, GITHUB_TOKEN
-GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET
-STRIPE_SECRET_KEY, EXODUS_BUDGET_LIMIT, OLLAMA_BASE_URL
-```
-
----
-
-## AI Budget Rules
-
-- Worth spending on: complex reviews, architecture decisions, initial code gen, Terraform risk analysis
-- Use local first: `EXODUS_USE_LOCAL_LLMS=true` routes economy/standard tier to Mac Studio Ollama
-- Track spend: `exodus ai-usage`
-- Budget gate: `EXODUS_BUDGET_LIMIT` env var (default $15/session)
+| Concern | Implementation | Notes |
+|---------|---------------|-------|
+| Auth modes | dev / JWT / KMS / OIDC | Configured via `AUTH_MODE` env var |
+| Multi-tenancy | PostgreSQL RLS via `app.tenant_id` | Set in `dependencies.py` |
+| Rate limiting | Redis-backed (distributed) | Falls back to in-process when no Redis |
+| Token revocation | 3-layer: L1 in-process → L2 Redis → L3 DB | Shared across replicas |
+| AI engine role | Advisory only, never mutates | Enforced architecturally |
+| Feature gates | `require_feature()` dependency | 3 tiers: community/team/enterprise |
+| Credential encryption | Fernet + PBKDF2 (480k rounds) | Always-on security behaviour |
+| Event bus | Transactional outbox | At-least-once delivery via `EventOutboxTable` |
+| Determinism | Tested via `TestDeterminism` gate | Core invariant — never break |

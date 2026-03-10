@@ -60,17 +60,17 @@ class TestCORSWildcardValidation:
         """Explicit origins with no wildcard must pass in production."""
         settings = APISettings(
             platform_env=PlatformEnv.PROD,
-            cors_origins=["https://app.ironlayer.io"],
+            cors_origins=["https://app.ironlayer.app"],
             cors_allow_credentials=True,
         )
-        assert settings.cors_origins == ["https://app.ironlayer.io"]
+        assert settings.cors_origins == ["https://app.ironlayer.app"]
 
     def test_wildcard_mixed_with_explicit_origin_rejected_in_prod(self) -> None:
         """Having '*' in a mixed list still triggers the hard-fail in prod."""
         with pytest.raises(ValidationError, match="Wildcard CORS"):
             APISettings(
                 platform_env=PlatformEnv.PROD,
-                cors_origins=["https://app.ironlayer.io", "*"],
+                cors_origins=["https://app.ironlayer.app", "*"],
                 cors_allow_credentials=False,
             )
 

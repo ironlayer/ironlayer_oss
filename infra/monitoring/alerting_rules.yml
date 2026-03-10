@@ -271,7 +271,7 @@ groups:
             Nginx 5xx error rate is {{ $value | humanizePercentage }}, which is
             14.4× the 0.1% error budget.  At this rate the 30-day budget will
             be exhausted in ~1 hour.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-error-rate"
+          runbook: "https://github.com/ironlayer/ironlayer/wiki/runbooks/frontend-error-rate"
 
       # Slow-burn: >6× error budget for 30 minutes → budget exhausted in ~5 hours.
       - alert: FrontendHighErrorRateSlowBurn
@@ -291,7 +291,7 @@ groups:
           description: >
             Nginx 5xx error rate has been elevated for 15 min.  Error budget
             consumption is 6× the target rate.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-error-rate"
+          runbook: "https://github.com/ironlayer/ironlayer/wiki/runbooks/frontend-error-rate"
 
   # ---------------------------------------------------------------------------
   # Frontend (Nginx) — Latency
@@ -323,7 +323,7 @@ groups:
             assets are served with 1-year immutable cache (BL-115); this may
             indicate a cold-cache storm, missing CDN layer, or excessive
             JS/CSS bundle size after a bad Vite build.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/frontend-latency"
+          runbook: "https://github.com/ironlayer/ironlayer/wiki/runbooks/frontend-latency"
 
   # ---------------------------------------------------------------------------
   # Check Engine (Rust CLI / CI batch tool — metrics via Prometheus Pushgateway)
@@ -355,7 +355,7 @@ groups:
             in over 25 hours.  This may indicate a CI pipeline outage, a broken
             Pushgateway integration, or that the CLI tool is no longer being
             used.  Check CI logs and Pushgateway connectivity.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/check-engine-stalled"
+          runbook: "https://github.com/ironlayer/ironlayer/wiki/runbooks/check-engine-stalled"
 
       # High error rate: internal engine failures (panics, I/O, timeout)
       # exceeding 5% of runs in the past hour.  Lint failures that produce
@@ -379,4 +379,4 @@ groups:
             errors (Rust panics, I/O failures, or 2-minute timeouts) over the
             past hour.  Lint warnings returned to the user are not counted.
             Check CLI error logs, Rust panic output, and CI run artifacts.
-          runbook: "https://github.com/ironlayer/ironlayer_infra/wiki/runbooks/check-engine-errors"
+          runbook: "https://github.com/ironlayer/ironlayer/wiki/runbooks/check-engine-errors"

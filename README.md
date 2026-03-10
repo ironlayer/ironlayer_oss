@@ -4,8 +4,6 @@
 
 IronLayer sits between your SQL models and your Databricks warehouse. It generates deterministic execution plans from git diffs, manages incremental state, and layers AI advisory analysis on top -- cost predictions, risk scoring, and optimization suggestions.
 
-Workspace: [iron-layer-dev-workspace](https://github.com/ironlayer/iron-layer-dev-workspace)
-
 ## Quick Install
 
 ```bash
