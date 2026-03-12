@@ -439,7 +439,7 @@ jobs:
         run: uv run bandit -r core_engine/core_engine api/api ai_engine/ai_engine -c pyproject.toml -f json -o bandit-report.json --severity-level medium || true
 
       - name: Upload bandit report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bandit-report
@@ -566,7 +566,7 @@ jobs:
             --input-file "sbom-${{ matrix.image }}-${{ github.sha }}.json"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ matrix.image }}-${{ github.sha }}
           path: sbom-${{ matrix.image }}-${{ github.sha }}.json
@@ -836,7 +836,7 @@ jobs:
 
       - name: Upload Playwright test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: frontend/playwright-report/
