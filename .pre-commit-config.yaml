@@ -29,3 +29,13 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
+
+  - repo: local
+    hooks:
+      - id: oss-boundary-check
+        name: OSS Boundary Check (no proprietary leakage)
+        language: script
+        entry: ../iron-layer-dev-workspace/tooling/scripts/oss-boundary-check.sh .
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
