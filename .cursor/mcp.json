@@ -1,0 +1,201 @@
+{
+  // ============================================================================
+  // Exodus MCP Server Configuration — Template
+  //
+  // This file is the canonical template for .cursor/mcp.json across all repos.
+  // Managed by: make sync-ai
+  // Source: iron-layer-dev-workspace/ai/cursor/mcp.json.template
+  //
+  // HOW PATH RESOLUTION WORKS:
+  //   - All repos are siblings in a shared parent directory (resolved by $WORKSPACE_ROOT/..)
+  //   - exodus-core lives at ../exodus-core relative to any sibling repo
+  //   - activate.sh sets WORKSPACE_ROOT, EXODUS_REPOS_ROOT, and EXODUS_CORE_PATH
+  //   - uv run auto-discovers the .venv in the current project — no hardcoded venv paths
+  //
+  // REQUIRED SETUP:
+  //   export WORKSPACE_ROOT="<path-to>/iron-layer-dev-workspace"
+  //   export EXODUS_CORE_PATH="<path-to>/exodus-core"
+  //   (These are set automatically by activate.sh — no manual config needed)
+  // ============================================================================
+  "mcpServers": {
+
+    // ─── Exodus Core MCP Server ────────────────────────────────────────────
+    // The primary MCP server providing 18+ tools: plan engine, lineage, catalog,
+    // SQL analysis, data diff, schema health, agent execution, and more.
+    // Built in exodus-core and served via exodus_core.mcp_server:app
+    "exodus-core": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${env:EXODUS_CORE_PATH}",
+        "python",
+        "-m",
+        "exodus_core.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "${env:EXODUS_CORE_PATH}",
+        "ANTHROPIC_API_KEY": "${env:ANTHROPIC_API_KEY}",
+        "DATABRICKS_HOST": "${env:DATABRICKS_HOST}",
+        "DATABRICKS_TOKEN": "${env:DATABRICKS_TOKEN}",
+        "DATABRICKS_WAREHOUSE_ID": "${env:DATABRICKS_WAREHOUSE_ID}",
+        "EXODUS_BUDGET_LIMIT": "${env:EXODUS_BUDGET_LIMIT}",
+        "EXODUS_USE_LOCAL_LLMS": "${env:EXODUS_USE_LOCAL_LLMS}",
+        "VLLM_BASE_URL": "${env:VLLM_BASE_URL}"
+      },
+      "description": "Exodus core tools — plan engine, lineage, schema diff, catalog, SQL review, agent execution"
+    },
+
+    // ─── GitHub MCP Server ────────────────────────────────────────────────
+    // Official GitHub MCP server from Anthropic.
+    // Provides tools: list_repos, get_file, create_pr, review_pr, get_issues, etc.
+    // Scope: ironlayer org + any repo the GITHUB_TOKEN has access to.
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
+      },
+      "description": "GitHub API tools — repos, PRs, issues, files, reviews (ironlayer org)"
+    },
+
+    // ─── dbt MCP Server (Local / dbt Core) ────────────────────────────────
+    // Official dbt Labs MCP server — connects to a local dbt Core project.
+    // Provides CLI tools: dbt_run, dbt_build, dbt_test, dbt_compile, dbt_list, dbt_parse,
+    //   dbt_show, dbt_docs, dbt_source_freshness
+    // Metadata tools: get_all_models, get_model_details, get_lineage, get_all_sources,
+    //   get_exposures, get_model_health
+    // Codegen tools (requires DISABLE_DBT_CODEGEN=false):
+    //   generate_staging_model, generate_model_yaml, generate_source
+    //
+    // SETUP: Set DBT_PROJECT_DIR in ~/.exodus/env.local to point to the active dbt project.
+    //   For Exodus Foundation:       export DBT_PROJECT_DIR="$WORKSPACE_ROOT/../ironlayer_infra/dbt"
+    //   For DPB legacy work:         export DBT_PROJECT_DIR="$WORKSPACE_ROOT/../dpb-platform/dbt-framework"
+    //   For client template:         export DBT_PROJECT_DIR="$WORKSPACE_ROOT/../exodus-client-template/dbt-framework"
+    //
+    // NOTE: This is for dbt CORE projects. For dbt Cloud Enterprise clients, use dbt-cloud below.
+    "dbt": {
+      "command": "uvx",
+      "args": ["dbt-mcp"],
+      "env": {
+        "DBT_PROJECT_DIR": "${env:DBT_PROJECT_DIR}",
+        "DBT_PROFILES_DIR": "${env:HOME}/.dbt",
+        "DBT_TARGET": "dev",
+        "DISABLE_DBT_CODEGEN": "false"
+      },
+      "description": "dbt Core tools — compile, run, test, lineage, codegen (local project via DBT_PROJECT_DIR)"
+    },
+
+    // ─── dbt Cloud MCP Server (Remote / Enterprise) ───────────────────────
+    // Official dbt Labs Remote MCP server — connects to a client's dbt Cloud Enterprise account.
+    // No local dbt CLI required. Everything runs in the client's dbt Cloud environment.
+    //
+    // Available tools (Enterprise plan):
+    //   Discovery API: get_all_models, get_model_details, get_lineage, get_model_health,
+    //     get_all_sources, get_exposures
+    //   Semantic Layer: query_metrics, list_metrics, get_entities, get_dimensions,
+    //     list_saved_queries
+    //   Admin API: trigger_job_run, list_jobs_runs, get_job_run_details, list_jobs
+    //   SQL tools: execute_sql, text_to_sql (uses Copilot credits)
+    //
+    // SETUP: Add these vars to ~/.exodus/env.local for each client:
+    //   export DBT_CLOUD_HOST="https://<account>.us1.dbt.com"  (or eu1 / custom subdomain)
+    //   export DBT_CLOUD_TOKEN="<service-token>"   (dbt Cloud > Account > Service Tokens)
+    //   export DBT_CLOUD_ACCOUNT_ID="<account-id>"
+    //   export DBT_CLOUD_PROD_ENV_ID="<prod-environment-id>"
+    //   export DBT_CLOUD_DEV_ENV_ID="<dev-environment-id>"
+    //
+    // NOTE: dbt Agents (Analyst, Discovery, Observability) run natively in dbt Cloud UI.
+    //   This MCP server gives Cursor access to the same underlying metadata and APIs.
+    "dbt-cloud": {
+      "command": "uvx",
+      "args": ["dbt-mcp"],
+      "env": {
+        "DBT_HOST": "${env:DBT_CLOUD_HOST}",
+        "DBT_TOKEN": "${env:DBT_CLOUD_TOKEN}",
+        "DBT_ACCOUNT_ID": "${env:DBT_CLOUD_ACCOUNT_ID}",
+        "DBT_PROD_ENV_ID": "${env:DBT_CLOUD_PROD_ENV_ID}",
+        "DBT_DEV_ENV_ID": "${env:DBT_CLOUD_DEV_ENV_ID}"
+      },
+      "description": "dbt Cloud Enterprise — Remote MCP, Semantic Layer, Discovery API, Job triggers, dbt Agents metadata"
+    },
+
+    // ─── Terraform MCP Server ─────────────────────────────────────────────
+    // Provides: terraform_plan, terraform_validate, resource lookup.
+    // Points to exodus-terraform for GitHub org management by default.
+    "terraform": {
+      "command": "uvx",
+      "args": ["mcp-terraform-server"],
+      "env": {
+        "TERRAFORM_WORKING_DIR": "${env:EXODUS_TERRAFORM_PATH}",
+        "TF_TOKEN_app_terraform_io": "${env:TF_TOKEN}"
+      },
+      "description": "Terraform tools — plan, validate, resource lookup (exodus-terraform)"
+    },
+
+    // ─── Slack MCP Server (Discord fallback) ───────────────────────────────
+    // NOTE: We use Discord for now. Swap this for official Slack MCP when moving to Slack.
+    // For Discord: use the community discord-mcp or the HTTP API directly via exodus-core.
+    // "slack": {
+    //   "command": "npx",
+    //   "args": ["-y", "@modelcontextprotocol/server-slack"],
+    //   "env": { "SLACK_BOT_TOKEN": "${env:SLACK_BOT_TOKEN}" }
+    // },
+
+    // ─── Databricks AI Dev Kit MCP Server ─────────────────────────────────
+    // Official Databricks MCP server from databricks-solutions/ai-dev-kit.
+    // Provides 50+ tools: Unity Catalog browsing, SQL execution, Jobs API,
+    // Delta Live Tables, Genie spaces, Vector Search, and more.
+    // Install: uvx databricks-ai-dev-kit (no persistent install needed)
+    "databricks": {
+      "command": "uvx",
+      "args": ["databricks-ai-dev-kit"],
+      "env": {
+        "DATABRICKS_HOST": "${env:DATABRICKS_HOST}",
+        "DATABRICKS_TOKEN": "${env:DATABRICKS_TOKEN}",
+        "DATABRICKS_WAREHOUSE_ID": "${env:DATABRICKS_WAREHOUSE_ID}"
+      },
+      "description": "Databricks tools — Unity Catalog, SQL warehouse, Jobs, DLT, Genie (50+ tools)"
+    },
+
+    // ─── SQLMesh MCP Server ───────────────────────────────────────────────
+    // SQLMesh tools for clients using SQLMesh as their transformation framework.
+    // Provides: sqlmesh_plan (dry-run), sqlmesh_run (execute), sqlmesh_test (unit tests),
+    //   sqlmesh_table_diff (compare environments), sqlmesh_lineage (column lineage DAG)
+    //
+    // AVAILABILITY: Check if an official sqlmesh-mcp package exists first:
+    //   uvx sqlmesh-mcp --help
+    // If not available, Exodus scaffolds a minimal MCP server using SQLMesh Python API:
+    //   exodus/serving/mcp/sqlmesh_server.py (I-24 Epic 24.6.3)
+    //
+    // SETUP: Add to ~/.exodus/env.local:
+    //   export SQLMESH_PROJECT_DIR="$WORKSPACE_ROOT/../{client-repo}/sqlmesh"
+    //   export SQLMESH_DEFAULT_GATEWAY="databricks"  # or duckdb, local, etc.
+    //
+    // NOTE: Enable only for client repos that use SQLMesh. Disable for dbt-only projects.
+    //   To disable: comment out this block or set "disabled": true
+    "sqlmesh": {
+      "command": "uvx",
+      "args": ["sqlmesh-mcp"],
+      "env": {
+        "SQLMESH_PROJECT_DIR": "${env:SQLMESH_PROJECT_DIR}",
+        "SQLMESH_DEFAULT_GATEWAY": "${env:SQLMESH_DEFAULT_GATEWAY}"
+      },
+      "description": "SQLMesh tools — plan, run, test, table_diff, lineage (local SQLMesh project via SQLMESH_PROJECT_DIR)"
+    },
+
+    // ─── Filesystem MCP Server (all repos) ──────────────────────────────────
+    // Provides: read_file, write_file, list_dir, search_files.
+    // Scoped to EXODUS_REPOS_ROOT (parent of iron-layer-dev-workspace).
+    // Requires EXODUS_REPOS_ROOT (set by source activate.sh or in ~/.exodus/env.local).
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${env:EXODUS_REPOS_ROOT}"
+      ],
+      "description": "Filesystem tools scoped to all Exodus repos (set by activate.sh or EXODUS_REPOS_ROOT in env.local)"
+    }
+  }
+}
