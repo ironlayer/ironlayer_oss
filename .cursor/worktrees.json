@@ -1,0 +1,9 @@
+{
+  "setup-worktree-unix": [
+    "uv sync --frozen 2>/dev/null || uv sync",
+    "cp $ROOT_WORKTREE_PATH/.env .env 2>/dev/null || true"
+  ],
+  "setup-worktree-windows": [
+    "uv sync --frozen 2>/dev/null || uv sync"
+  ]
+}
