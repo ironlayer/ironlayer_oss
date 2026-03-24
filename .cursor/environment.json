@@ -1,7 +1,0 @@
-{
-  "install": "make setup-cloud 2>/dev/null || uv sync --frozen",
-  "startup": [
-    "uv sync --frozen 2>/dev/null || uv sync",
-    "source ~/.iron/env.local 2>/dev/null || true"
-  ]
-}
